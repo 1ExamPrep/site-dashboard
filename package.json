@@ -1,0 +1,23 @@
+{
+  "name": "site-dashboard",
+  "version": "1.0.0",
+  "description": "Admin dashboard for many static Shopify-backed sites: tracking, products, sync, deploys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "SCHEDULER=off node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.22.3",
+    "node-cron": "^3.0.3",
+    "pg": "^8.23.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
