@@ -27,3 +27,18 @@
     svg.addEventListener("mouseleave",function(){dots.forEach(function(d){d.classList.remove("on");});xh.classList.remove("on");tip.classList.remove("on");});
   });
 })();
+
+/* live sync progress bar (Sync & Deploy) */
+(function(){
+  var el=document.getElementById("syncProg"); if(!el||el.dataset.done==="1") return;
+  var step=el.querySelector("[data-step]"),pct=el.querySelector("[data-pct]"),bar=el.querySelector("[data-bar]"),det=el.querySelector("[data-detail]");
+  function tick(){
+    fetch(el.dataset.status,{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(j){
+      if(j.idle){ location.reload(); return; }
+      step.textContent=j.step; pct.textContent=j.pct+"%"; bar.style.width=j.pct+"%"; det.textContent=j.detail||"";
+      if(j.done){ el.className="progress "+(j.error?"bad":"ok"); setTimeout(function(){ location.reload(); },1200); return; }
+      setTimeout(tick,1200);
+    }).catch(function(){ setTimeout(tick,3000); });
+  }
+  setTimeout(tick,800);
+})();

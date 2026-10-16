@@ -41,13 +41,16 @@ async function shopInfo(domain, token) {
   const d = await gql(domain, token, `{ shop { name myshopifyDomain primaryDomain { url } currencyCode } }`, {});
   return d.shop;
 }
-async function fetchCollection(domain, token, collectionId) {
-  const nodes = []; let after = null, title = "";
+async function fetchCollection(domain, token, collectionId, onPage) {
+  const nodes = []; let after = null, title = "", total = 0;
+  try { const c0 = await gql(domain, token, `query($id: ID!) { collection(id: $id) { title productsCount { count } } }`, { id: "gid://shopify/Collection/" + collectionId }); if (c0.collection) { total = c0.collection.productsCount.count; title = c0.collection.title; } } catch (e) {}
+  if (onPage) onPage(0, total, title);
   while (true) {
     const d = await gql(domain, token, QUERY, { id: "gid://shopify/Collection/" + collectionId, first: 50, after });
     if (!d.collection) throw new Error("Collection not found: " + collectionId);
     title = d.collection.title; const c = d.collection.products;
     nodes.push(...c.edges.map(e => e.node));
+    if (onPage) onPage(nodes.length, total, title);
     if (!c.pageInfo.hasNextPage) break; after = c.pageInfo.endCursor;
   }
   return { title, nodes: nodes.filter(n => n.status === "ACTIVE") };

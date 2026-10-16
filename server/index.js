@@ -142,12 +142,13 @@ app.get("/sites/:slug/sync", auth, site, async (req, res) => {
   const logs = await db.all("SELECT * FROM sync_log WHERE site_id=? AND kind<>'fingerprint' ORDER BY id DESC LIMIT 40", [req.site.id]);
   let gh = null; const t = db.dec(req.site.github_token_enc);
   if (req.site.github_repo && t) { try { gh = { repo: await github.repoInfo(t, req.site.github_repo), runs: await github.runs(t, req.site.github_repo, 6), commits: await github.commits(t, req.site.github_repo, 6), pages: await github.pagesInfo(t, req.site.github_repo) }; } catch (e) { gh = null; } }
-  res.send(V.syncPage(req.ctx, req.site, logs, gh));
+  res.send(V.syncPage(req.ctx, req.site, logs, gh, sync.job(req.site.id)));
 });
 app.post("/sites/:slug/sync/run", auth, site, async (req, res) => {
-  const r = await sync.syncSafe(req.site, { force: !!req.body.force }); if (req.body.force && !r.error) { try { await sync.syncSite(req.site, { force: true }); } catch (e) {} }
-  res.redirect(`/sites/${req.site.slug}/sync?` + (r.error ? "err=" + encodeURIComponent(r.error) : "ok=" + encodeURIComponent(r.note)));
+  sync.startJob(req.site, { force: !!req.body.force });
+  res.redirect(`/sites/${req.site.slug}/sync`);
 });
+app.get("/api/sites/:slug/sync/status", auth, site, (req, res) => { res.set("Cache-Control", "no-store"); res.json(sync.job(req.site.id) || { idle: true }); });
 app.post("/sites/:slug/deploy", auth, site, async (req, res) => {
   const t = db.dec(req.site.github_token_enc);
   try { await github.dispatch(t, req.site.github_repo, "build.yml", req.site.github_branch || "main"); await db.run("INSERT INTO sync_log (site_id, kind, status, note) VALUES (?,?,?,?)", [req.site.id, "deploy", "ok", "build.yml triggered by hand"]); res.redirect(`/sites/${req.site.slug}/sync?ok=` + encodeURIComponent("Rebuild triggered; it shows under Recent builds in a minute.")); }
