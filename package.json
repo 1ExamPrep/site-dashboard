@@ -11,13 +11,15 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
     "cookie-parser": "^1.4.7",
     "express": "^4.22.3",
     "node-cron": "^3.0.3",
     "pg": "^8.23.1"
   },
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
   }
 }
