@@ -21,20 +21,25 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS ev_site_day ON events (site_id, day)`,
   `CREATE INDEX IF NOT EXISTS ev_site_event ON events (site_id, event, day)`,
   `CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, site_id INTEGER NOT NULL, order_id TEXT NOT NULL, name TEXT, created_at TIMESTAMP, total REAL, currency TEXT, status TEXT, items TEXT, UNIQUE(site_id, order_id))`,
+  `CREATE TABLE IF NOT EXISTS posts (id SERIAL PRIMARY KEY, site_id INTEGER NOT NULL, slug TEXT NOT NULL, title TEXT NOT NULL, status TEXT DEFAULT 'published', date TEXT, author TEXT DEFAULT '', excerpt TEXT DEFAULT '', image TEXT DEFAULT '',
+     tags TEXT DEFAULT '', state TEXT DEFAULT '', level TEXT DEFAULT '', body TEXT DEFAULT '', source TEXT DEFAULT 'manual', commit_sha TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(site_id, slug))`,
   `CREATE TABLE IF NOT EXISTS sync_log (id SERIAL PRIMARY KEY, site_id INTEGER NOT NULL, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, kind TEXT, status TEXT, note TEXT)`,
 ];
 
+const MIGRATIONS = [`ALTER TABLE sites ADD COLUMN webhook_secret TEXT DEFAULT ''`];
 async function init() {
   if (PG_URL) {
     const { Pool } = require("pg");
     pg = new Pool({ connectionString: PG_URL, ssl: PG_URL.includes("localhost") ? false : { rejectUnauthorized: false } });
     for (const s of SCHEMA) await pg.query(s);
+    for (const m of MIGRATIONS) await pg.query(m.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS"));
   } else {
     const Database = require("better-sqlite3");
     const path = process.env.SQLITE_PATH || require("path").join(__dirname, "..", "data.sqlite");
     sqlite = new Database(path);
     sqlite.pragma("journal_mode = WAL");
     for (const s of SCHEMA) sqlite.exec(s.replace(/SERIAL PRIMARY KEY/g, "INTEGER PRIMARY KEY AUTOINCREMENT").replace(/CURRENT_TIMESTAMP/g, "@@NOW@@").replace(/TIMESTAMP/g, "TEXT").replace(/@@NOW@@/g, "CURRENT_TIMESTAMP"));
+    for (const m of MIGRATIONS) { try { sqlite.exec(m); } catch (e) { /* column exists */ } }
   }
   return module.exports;
 }

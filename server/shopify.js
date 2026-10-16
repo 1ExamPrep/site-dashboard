@@ -10,8 +10,25 @@ const QUERY = `query($id: ID!, $first: Int!, $after: String) { collection(id: $i
     variants(first: 5) { edges { node { id title price compareAtPrice availableForSale } } } } }
   pageInfo { hasNextPage endCursor } } } }`;
 
-async function gql(domain, token, query, variables) {
+/* Credentials: either an Admin API access token (shpat_…, from a custom app made in the store admin) or
+   "clientId:clientSecret" from a Dev Dashboard app that is installed on the store. For the second kind we
+   fetch a 24-hour access token with the client-credentials grant and cache it. */
+const TOK = new Map();
+async function resolveToken(domain, cred) {
+  cred = String(cred || "").trim();
+  const m = cred.match(/^([0-9a-f]{20,}):(shpss_[0-9a-f]+)$/i) || cred.match(/^([0-9a-f]{20,})[\s,;]+(shpss_[0-9a-f]+)$/i);
+  if (!m) { if (/^shpss_/.test(cred)) throw new Error("that is a client secret; paste it together with the client id as  clientId:clientSecret, or use an Admin API access token (shpat_…)"); return cred; }
+  const key = domain + "|" + m[1]; const c = TOK.get(key); if (c && c.exp > Date.now()) return c.token;
   const base = domain.startsWith("http") ? domain : "https://" + domain;
+  const r = await fetch(`${base}/admin/oauth/access_token`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grant_type: "client_credentials", client_id: m[1], client_secret: m[2] }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.access_token) throw new Error(`Shopify token exchange ${r.status}: ${JSON.stringify(d).slice(0, 200)} (is the app installed on this store with read_products/read_orders scopes?)`);
+  TOK.set(key, { token: d.access_token, exp: Date.now() + Math.max(60, (d.expires_in || 86400) - 300) * 1000 });
+  return d.access_token;
+}
+async function gql(domain, cred, query, variables) {
+  const base = domain.startsWith("http") ? domain : "https://" + domain;
+  const token = await resolveToken(domain, cred);
   for (let attempt = 0; attempt < 5; attempt++) {
     const r = await fetch(`${base}/admin/api/${API}/graphql.json`, { method: "POST", headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token }, body: JSON.stringify({ query, variables }) });
     if (r.status === 429 && attempt < 4) { await new Promise(res => setTimeout(res, 2000 + attempt * 2000)); continue; }
@@ -101,4 +118,4 @@ function toCatalog(nodes) {
 function catalogJs(cat, note) {
   return `/* Auto-generated from Shopify by the site dashboard${note ? " (" + note + ")" : ""}, pulled ${new Date().toISOString().slice(0, 10)}. ${cat.length} products. Regenerate rather than hand-edit. */\nwindow.CATALOG=${JSON.stringify(cat)};\nwindow.CATALOG_STATES=${JSON.stringify(STATES)};\n`;
 }
-module.exports = { shopInfo, fetchCollection, listCollections, recentOrders, toCatalog, catalogJs, STATES };
+module.exports = { resolveToken, shopInfo, fetchCollection, listCollections, recentOrders, toCatalog, catalogJs, STATES };

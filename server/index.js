@@ -1,13 +1,14 @@
 /* Site Dashboard: one admin for many static sites (tracking, products, Shopify sync, GitHub deploys). */
 const express = require("express"), cookieParser = require("cookie-parser"), crypto = require("crypto"), path = require("path");
-const db = require("./db"), V = require("./views"), shopify = require("./shopify"), github = require("./github"), sync = require("./sync");
+const db = require("./db"), V = require("./views"), shopify = require("./shopify"), github = require("./github"), sync = require("./sync"), blog = require("./blog");
 
 const APP_SECRET = process.env.APP_SECRET || "dev-secret-change-me";
 const TZ = process.env.TZ_NAME || "America/Chicago";
 const app = express();
 app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
-app.use(express.json({ limit: "200kb", type: ["application/json", "text/plain"] }));
+app.use(express.json({ limit: "2mb", type: ["application/json", "text/plain"] }));
+app.use(express.urlencoded({ extended: false, limit: "2mb" }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "..", "public"), { maxAge: "1h" }));
 
@@ -93,12 +94,21 @@ app.get("/", auth, async (req, res) => {
 app.get("/sites/new", auth, (req, res) => res.send(V.newSitePage(req.ctx)));
 app.post("/sites/new", auth, async (req, res) => {
   const b = req.body, name = String(b.name || "").trim(); if (!name) return res.send(V.newSitePage(req.ctx, "Name is required", b));
+  try { shopifyCred(b); } catch (e) { return res.send(V.newSitePage(req.ctx, e.message, b)); }
   let slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "site"; let i = 1, base = slug; while (await db.get("SELECT id FROM sites WHERE slug=?", [slug])) slug = base + "-" + (++i);
   const key = "sk_" + crypto.randomBytes(12).toString("hex");
-  await db.run(`INSERT INTO sites (slug, name, url, site_key, github_repo, github_token_enc, shopify_domain, shopify_token_enc, shopify_collection, shopify_store_url) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [slug, name, String(b.url || "").trim(), key, String(b.github_repo || "").trim(), db.enc(String(b.github_token || "").trim()), String(b.shopify_domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""), db.enc(String(b.shopify_token || "").trim()), String(b.shopify_collection || "").trim(), String(b.shopify_store_url || "").trim()]);
+  const shopCred = shopifyCred(b);
+  await db.run(`INSERT INTO sites (slug, name, url, site_key, webhook_secret, github_repo, github_token_enc, shopify_domain, shopify_token_enc, shopify_collection, shopify_store_url) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    [slug, name, String(b.url || "").trim(), key, blog.newSecret(), String(b.github_repo || "").trim(), db.enc(String(b.github_token || "").trim()), String(b.shopify_domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""), db.enc(shopCred), String(b.shopify_collection || "").trim(), String(b.shopify_store_url || "").trim()]);
   res.redirect(`/sites/${slug}/settings?ok=` + encodeURIComponent("Site connected. Your tracker key is ready below; add Shopify and GitHub details if you skipped them."));
 });
+/* Shopify credential from a form: a shpat_ token, or clientId:clientSecret from a Dev Dashboard app */
+function shopifyCred(b) {
+  const t = String(b.shopify_token || "").trim(), id = String(b.shopify_client_id || "").trim(), sec = String(b.shopify_client_secret || "").trim();
+  if (id && sec) return id + ":" + sec;
+  if (/^shpss_/.test(t)) throw Object.assign(new Error("That is a client secret, not an access token. Paste the Client ID in its own box next to it, or use a shpat_ token."), { user: true });
+  return t;
+}
 const site = async (req, res, next) => { req.site = await db.get("SELECT * FROM sites WHERE slug=?", [req.params.slug]); if (!req.site) return res.status(404).send("No such site"); req.days = [7, 28, 90].includes(+req.query.days) ? +req.query.days : 28; next(); };
 app.get("/sites/:slug", auth, site, async (req, res) => res.send(V.sitePage(req.ctx, req.site, req.days, await stats(req.site.id, req.days))));
 app.get("/sites/:slug/analytics", auth, site, async (req, res) => res.send(V.analyticsPage(req.ctx, req.site, req.days, await stats(req.site.id, req.days))));
@@ -155,16 +165,56 @@ app.get("/sites/:slug/settings", auth, site, async (req, res) => {
 });
 app.post("/sites/:slug/settings", auth, site, async (req, res) => {
   const b = req.body, s = req.site;
+  try { shopifyCred(b); } catch (e) { return res.redirect(`/sites/${s.slug}/settings?err=${encodeURIComponent(e.message)}`); }
   const upd = { name: String(b.name || s.name).trim(), url: String(b.url || "").trim().replace(/\/$/, ""), notes: String(b.notes || ""), github_repo: String(b.github_repo || "").trim(), github_branch: String(b.github_branch || "main").trim() || "main",
     shopify_domain: String(b.shopify_domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""), shopify_collection: String(b.shopify_collection_pick || b.shopify_collection || "").trim(), shopify_store_url: String(b.shopify_store_url || "").trim(),
     ga4_measurement: String(b.ga4_measurement || "").trim(), ga4_property: String(b.ga4_property || "").trim(), sync_enabled: b.sync_enabled === "0" ? 0 : 1, sync_weekday: +b.sync_weekday || 0, sync_hour: +b.sync_hour || 0 };
   const cols = Object.keys(upd); const vals = Object.values(upd);
   await db.run(`UPDATE sites SET ${cols.map(c => c + "=?").join(", ")} WHERE id=?`, [...vals, s.id]);
   if (b.github_token) await db.run("UPDATE sites SET github_token_enc=? WHERE id=?", [db.enc(String(b.github_token).trim()), s.id]);
-  if (b.shopify_token) await db.run("UPDATE sites SET shopify_token_enc=? WHERE id=?", [db.enc(String(b.shopify_token).trim()), s.id]);
+  const cred = shopifyCred(b); if (cred) await db.run("UPDATE sites SET shopify_token_enc=? WHERE id=?", [db.enc(cred), s.id]);
   res.redirect(`/sites/${s.slug}/settings?ok=${encodeURIComponent("Saved")}${b.test ? "&test=1" : ""}`);
 });
-app.post("/sites/:slug/delete", auth, site, async (req, res) => { for (const t of ["events", "products", "orders", "sync_log"]) await db.run(`DELETE FROM ${t} WHERE site_id=?`, [req.site.id]); await db.run("DELETE FROM sites WHERE id=?", [req.site.id]); res.redirect("/?ok=" + encodeURIComponent("Site removed")); });
+app.post("/sites/:slug/delete", auth, site, async (req, res) => { for (const t of ["events", "products", "orders", "sync_log", "posts"]) await db.run(`DELETE FROM ${t} WHERE site_id=?`, [req.site.id]); await db.run("DELETE FROM sites WHERE id=?", [req.site.id]); res.redirect("/?ok=" + encodeURIComponent("Site removed")); });
+
+/* ---------- blog ---------- */
+const ensureSecret = async site => { if (!site.webhook_secret) { site.webhook_secret = blog.newSecret(); await db.run("UPDATE sites SET webhook_secret=? WHERE id=?", [site.webhook_secret, site.id]); } return site; };
+app.get("/sites/:slug/blog", auth, site, async (req, res) => {
+  await ensureSecret(req.site);
+  const posts = await db.all("SELECT id, slug, title, status, date, author, tags, source, updated_at, commit_sha FROM posts WHERE site_id=? ORDER BY date DESC, id DESC", [req.site.id]);
+  const logs = await db.all("SELECT * FROM sync_log WHERE site_id=? AND kind='blog' ORDER BY id DESC LIMIT 12", [req.site.id]);
+  res.send(V.blogPage(req.ctx, req.site, posts, logs));
+});
+app.get("/sites/:slug/blog/new", auth, site, (req, res) => res.send(V.blogEditPage(req.ctx, req.site, null)));
+app.get("/sites/:slug/blog/:id/edit", auth, site, async (req, res) => { const p = await db.get("SELECT * FROM posts WHERE id=? AND site_id=?", [req.params.id, req.site.id]); if (!p) return res.status(404).send("No such post"); res.send(V.blogEditPage(req.ctx, req.site, p)); });
+app.post("/sites/:slug/blog/save", auth, site, async (req, res) => {
+  const p = blog.fromPayload(req.body); const oldSlug = String(req.body.old_slug || "");
+  try { const r = await blog.save(req.site, p, "editor", { oldSlug }); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent(`Saved "${p.title}": ${r.note}`)); }
+  catch (e) { res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent(e.message)); }
+});
+app.post("/sites/:slug/blog/:id/delete", auth, site, async (req, res) => {
+  const p = await db.get("SELECT * FROM posts WHERE id=? AND site_id=?", [req.params.id, req.site.id]); if (!p) return res.redirect(`/sites/${req.site.slug}/blog`);
+  try { await blog.remove(req.site, p); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent(`Removed "${p.title}"`)); } catch (e) { res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent(e.message)); }
+});
+app.post("/sites/:slug/blog/import", auth, site, async (req, res) => { try { const n = await blog.importFromRepo(req.site); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent(`Imported ${n} post${n === 1 ? "" : "s"} from the repo`)); } catch (e) { res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent(e.message)); } });
+app.post("/sites/:slug/blog/secret", auth, site, async (req, res) => { await db.run("UPDATE sites SET webhook_secret=? WHERE id=?", [blog.newSecret(), req.site.id]); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent("New webhook secret generated. Update it in the tool that sends posts.")); });
+
+/* public webhook: any tool can push a post. Auth: Authorization: Bearer <secret> (or X-Webhook-Secret / ?secret=). */
+app.post("/hooks/blog/:key", async (req, res) => {
+  const site = await db.get("SELECT * FROM sites WHERE site_key=?", [req.params.key]); if (!site) return res.status(404).json({ ok: false, error: "unknown site key" });
+  if (!blog.secretOk(req, site)) return res.status(401).json({ ok: false, error: "bad or missing secret" });
+  const b = typeof req.body === "string" ? (() => { try { return JSON.parse(req.body); } catch (e) { return {}; } })() : (req.body || {});
+  try {
+    if (/^delete$/i.test(String(b.action || ""))) {
+      const slug = blog.slugify(b.slug || b.title); const p = await db.get("SELECT * FROM posts WHERE site_id=? AND slug=?", [site.id, slug]);
+      if (!p) return res.status(404).json({ ok: false, error: "no post with slug " + slug });
+      await blog.remove(site, p); return res.json({ ok: true, action: "deleted", slug });
+    }
+    const p = blog.fromPayload(b); const r = await blog.save(site, p, "webhook");
+    res.json({ ok: true, action: r.unchanged ? "unchanged" : "saved", slug: r.post.slug, status: r.post.status, url: r.url, commit: r.commit, build_triggered: r.built, note: r.note });
+  } catch (e) { res.status(e.status || 500).json({ ok: false, error: e.message }); }
+});
+app.get("/hooks/blog/:key", (req, res) => res.json({ ok: true, hint: "POST JSON here with Authorization: Bearer <webhook secret>. Fields: title, body (markdown or HTML), slug?, excerpt?, image?, tags?, author?, date?, status?, state?, level?, action?: 'delete'" }));
 
 /* JSON for other tools (same cookie auth) */
 app.get("/api/sites/:slug/stats", auth, site, async (req, res) => res.json(await stats(req.site.id, req.days)));

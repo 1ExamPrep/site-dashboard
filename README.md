@@ -40,15 +40,41 @@ in the database, so keep it (changing it makes saved tokens unreadable).
   repository access: just that repo → permissions *Contents: read & write* and
   *Actions: read & write*. The dashboard uses it to commit the catalog and
   trigger the site's `build.yml`.
-- **Shopify token**: Shopify admin → Settings → Apps and sales channels →
-  Develop apps → Create app → scopes `read_products` (and `read_orders` for the
-  Orders page) → Install → copy the Admin API access token. One token can be
-  reused by every site that sells from the same store.
+- **Shopify**: either an Admin API access token (`shpat_…`) from a custom app
+  made in the store admin (Settings → Apps and sales channels → Develop apps,
+  where that option still exists), or a Dev Dashboard app (dev.shopify.com):
+  give it the scopes `read_products,read_orders`, install it on the store, then
+  paste its Client ID and Client secret. The dashboard exchanges them for a
+  24-hour access token (client-credentials grant) and renews it by itself. One
+  set of credentials can be reused by every site that sells from the same store.
 - **Tracker**: Settings → Tracker shows the key and a one-line `<script>` snippet.
   Sites built from the electrician template only need `dashboardUrl` and
   `siteKey` in `site-config.json`, then `python3 build.py` and push. Any other
   site: paste the snippet before `</body>`; it records page views, Buy-now links
   (`/cart/…`), phone links, and anything with a `data-track="name"` attribute.
+
+## Blog (per site)
+
+**Blog** in the sidebar lists posts, has an editor (Markdown or HTML), and shows the
+site's webhook. Saving a post commits `content/posts/<slug>.md` to the site repo and
+triggers `build.yml`, which renders `/blog/`, `/blog/<slug>/`, `/blog/tag/<tag>/`,
+`/blog/feed.xml` and adds the posts to the sitemap and `llms.txt`.
+
+Webhook, for Zapier / Make / n8n / a CMS / any script:
+
+```
+POST https://<dashboard>/hooks/blog/<site key>
+Authorization: Bearer <webhook secret>        (or X-Webhook-Secret header, or ?secret=)
+Content-Type: application/json
+
+{"title": "…", "body": "Markdown or HTML", "slug": "optional", "excerpt": "…", "image": "https://…",
+ "tags": ["journeyman", "NEC"], "author": "…", "date": "2026-10-16", "status": "published|draft",
+ "state": "Texas", "level": "Master"}
+```
+
+Same slug again updates the post; `{"action": "delete", "slug": "…"}` removes it. The
+response is JSON with the live URL. "Pull posts from the repo" imports posts that were
+written by hand into `content/posts/`.
 
 ## What runs automatically
 

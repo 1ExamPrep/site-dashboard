@@ -20,6 +20,15 @@ async function putFile(token, repo, path, branch, content, message) {
   const d = await gh(token, "PUT", `/repos/${repo}/contents/${path}`, { message, content: Buffer.from(content, "utf8").toString("base64"), branch, sha: cur ? cur.sha : undefined, committer: { name: "site-dashboard", email: "dashboard@users.noreply.github.com" } });
   return { sha: d.commit && d.commit.sha };
 }
+async function deleteFile(token, repo, path, branch, message) {
+  const cur = await getFile(token, repo, path, branch); if (!cur) return { missing: true };
+  const d = await gh(token, "DELETE", `/repos/${repo}/contents/${path}`, { message, sha: cur.sha, branch, committer: { name: "site-dashboard", email: "dashboard@users.noreply.github.com" } });
+  return { sha: d.commit && d.commit.sha };
+}
+async function listDir(token, repo, path, branch) {
+  try { const d = await gh(token, "GET", `/repos/${repo}/contents/${path}?ref=${branch}`); return Array.isArray(d) ? d.map(f => ({ name: f.name, path: f.path, sha: f.sha, size: f.size })) : []; }
+  catch (e) { if (/404/.test(e.message)) return []; throw e; }
+}
 const dispatch = (token, repo, workflow, branch, inputs) => gh(token, "POST", `/repos/${repo}/actions/workflows/${workflow}/dispatches`, { ref: branch, inputs: inputs || {} });
 const pagesInfo = (token, repo) => gh(token, "GET", `/repos/${repo}/pages`).catch(() => null);
-module.exports = { repoInfo, commits, runs, getFile, putFile, dispatch, pagesInfo };
+module.exports = { repoInfo, commits, runs, getFile, putFile, deleteFile, listDir, dispatch, pagesInfo };
