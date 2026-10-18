@@ -27,7 +27,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sync_log (id SERIAL PRIMARY KEY, site_id INTEGER NOT NULL, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, kind TEXT, status TEXT, note TEXT)`,
 ];
 
-const MIGRATIONS = [`ALTER TABLE sites ADD COLUMN webhook_secret TEXT DEFAULT ''`];
+const MIGRATIONS = [`ALTER TABLE sites ADD COLUMN webhook_secret TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN takeaways TEXT DEFAULT ''`];
 async function init() {
   if (PG_URL) {
     const { Pool } = require("pg");

@@ -30,12 +30,13 @@ function fromPayload(b) {
     author: pick(o, ["author", "author_name", "byline", "writer"]), excerpt: pick(o, ["excerpt", "description", "meta_description", "summary", "seo_description", "subtitle"]).slice(0, 300),
     image: pick(o, ["image", "cover", "featured_image", "imageUrl", "image_url", "og_image", "hero_image", "thumbnail", "cover_image"]), tags: tagsOf(tags).join(", "),
     state: pick(o, ["state", "us_state"]), level: pick(o, ["level", "license_level"]), event: ev,
+    takeaways: (() => { const t = o.takeaways || o.key_takeaways || o.key_points || o.summary_points || o.tldr; return (Array.isArray(t) ? t.map(x => str(x).trim()).filter(Boolean) : String(t || "").split(/\s*[|\n]\s*/).map(x => x.trim()).filter(Boolean)).slice(0, 4).join(" | "); })(),
   };
 }
 
 /* the markdown file build.py reads */
 function fileFor(p) {
-  const fm = [["title", p.title], ["date", p.date], ["author", p.author], ["excerpt", p.excerpt.replace(/\n/g, " ")], ["image", p.image], ["tags", p.tags], ["state", p.state], ["level", p.level], ["status", p.status], ["updated", today()]]
+  const fm = [["title", p.title], ["date", p.date], ["author", p.author], ["excerpt", p.excerpt.replace(/\n/g, " ")], ["image", p.image], ["tags", p.tags], ["state", p.state], ["level", p.level], ["takeaways", p.takeaways || ""], ["status", p.status], ["updated", today()]]
     .filter(([, v]) => v).map(([k, v]) => `${k}: ${String(v).replace(/\n/g, " ")}`).join("\n");
   return `---\n${fm}\n---\n${p.body}\n`;
 }
@@ -50,7 +51,7 @@ async function save(site, p, source, opts = {}) {
   if (!p.body) throw Object.assign(new Error("body is required"), { status: 400 });
   if (!p.slug) p.slug = slugify(p.title) || "post";
   const cur = await db.get("SELECT id, slug FROM posts WHERE site_id=? AND slug=?", [site.id, p.slug]);
-  const cols = ["title", "status", "date", "author", "excerpt", "image", "tags", "state", "level", "body"];
+  const cols = ["title", "status", "date", "author", "excerpt", "image", "tags", "state", "level", "takeaways", "body"];
   if (p.state && !/^[A-Za-z .]{2,30}$/.test(p.state)) p.state = "";
   if (cur) await db.run(`UPDATE posts SET ${cols.map(c => c + "=?").join(", ")}, source=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, [...cols.map(c => p[c]), source, cur.id]);
   else await db.run(`INSERT INTO posts (site_id, slug, ${cols.join(", ")}, source) VALUES (?,?,${cols.map(() => "?").join(",")},?)`, [site.id, p.slug, ...cols.map(c => p[c]), source]);
@@ -90,7 +91,7 @@ async function importFromRepo(site) {
     const m = parseFile(g.content), slug = slugify(m.slug || f.name.replace(/\.md$/, ""));
     const p = { ...fromPayload({ ...m, slug }), slug }; if (!p.title) continue;
     const cur = await db.get("SELECT id FROM posts WHERE site_id=? AND slug=?", [site.id, slug]);
-    const cols = ["title", "status", "date", "author", "excerpt", "image", "tags", "state", "level", "body"];
+    const cols = ["title", "status", "date", "author", "excerpt", "image", "tags", "state", "level", "takeaways", "body"];
     if (cur) await db.run(`UPDATE posts SET ${cols.map(c => c + "=?").join(", ")}, updated_at=CURRENT_TIMESTAMP WHERE id=?`, [...cols.map(c => p[c]), cur.id]);
     else await db.run(`INSERT INTO posts (site_id, slug, ${cols.join(", ")}, source) VALUES (?,?,${cols.map(() => "?").join(",")},?)`, [site.id, slug, ...cols.map(c => p[c]), "repo"]);
     n++;
