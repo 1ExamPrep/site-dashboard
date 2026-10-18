@@ -100,7 +100,7 @@ app.post("/sites/new", auth, async (req, res) => {
   const shopCred = shopifyCred(b);
   await db.run(`INSERT INTO sites (slug, name, url, site_key, webhook_secret, github_repo, github_token_enc, shopify_domain, shopify_token_enc, shopify_collection, shopify_store_url) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [slug, name, String(b.url || "").trim(), key, blog.newSecret(), String(b.github_repo || "").trim(), db.enc(String(b.github_token || "").trim()), String(b.shopify_domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""), db.enc(shopCred), String(b.shopify_collection || "").trim(), String(b.shopify_store_url || "").trim()]);
-  res.redirect(`/sites/${slug}/settings?ok=` + encodeURIComponent("Site connected. Your tracker key is ready below; add Shopify and GitHub details if you skipped them."));
+  res.redirect(`/sites/${slug}/settings?ok=` + encodeURIComponent("Site connected. Tracker key is below, and the blog webhook is ready on the Blog page. Add Shopify and GitHub details if you skipped them."));
 });
 /* Shopify credential from a form: a shpat_ token, or clientId:clientSecret from a Dev Dashboard app */
 function shopifyCred(b) {
@@ -177,6 +177,15 @@ app.post("/sites/:slug/settings", auth, site, async (req, res) => {
   res.redirect(`/sites/${s.slug}/settings?ok=${encodeURIComponent("Saved")}${b.test ? "&test=1" : ""}`);
 });
 app.post("/sites/:slug/delete", auth, site, async (req, res) => { for (const t of ["events", "products", "orders", "sync_log", "posts"]) await db.run(`DELETE FROM ${t} WHERE site_id=?`, [req.site.id]); await db.run("DELETE FROM sites WHERE id=?", [req.site.id]); res.redirect("/?ok=" + encodeURIComponent("Site removed")); });
+
+/* ---------- blogs, all sites ---------- */
+app.get("/blogs", auth, async (req, res) => {
+  for (const s of req.sites) if (!s.webhook_secret) { s.webhook_secret = blog.newSecret(); await db.run("UPDATE sites SET webhook_secret=? WHERE id=?", [s.webhook_secret, s.id]); }
+  const posts = await db.all("SELECT p.id, p.slug, p.title, p.status, p.date, p.source, s.slug AS site_slug, s.name AS site_name, s.url AS site_url FROM posts p JOIN sites s ON s.id=p.site_id ORDER BY p.date DESC, p.id DESC LIMIT 200");
+  const counts = {}; for (const r of await db.all("SELECT site_id, COUNT(*) AS total, MAX(date) AS latest FROM posts GROUP BY site_id")) counts[r.site_id] = r;
+  res.send(V.blogsPage(req.ctx, req.sites, posts, counts));
+});
+app.get("/blogs/new", auth, (req, res) => res.redirect(req.query.site ? `/sites/${encodeURIComponent(req.query.site)}/blog/new` : "/blogs"));
 
 /* ---------- blog ---------- */
 const ensureSecret = async site => { if (!site.webhook_secret) { site.webhook_secret = blog.newSecret(); await db.run("UPDATE sites SET webhook_secret=? WHERE id=?", [site.webhook_secret, site.id]); } return site; };

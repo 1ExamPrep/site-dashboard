@@ -75,3 +75,6 @@ details summary{cursor:pointer;font-weight:600;margin:.5rem 0}
 @keyframes slide{from{background-position:200% 0}to{background-position:0 0}}
 .progress.ok .prog-track i{background:var(--ok)}.progress.bad .prog-track i{background:var(--bad)}
 .progress p{margin:0;font-size:.85rem}
+code.sel{user-select:all;font-size:.78rem;word-break:break-all;white-space:normal}
+.hooks td{white-space:normal;vertical-align:top}.hooks td:nth-child(3),.hooks td:nth-child(4){min-width:220px}.hooks td.num{white-space:nowrap}
+.row.pick select{padding:.6rem .8rem;border:1px solid var(--line);border-radius:999px;background:#fff;font:inherit;font-weight:600;min-width:220px}
