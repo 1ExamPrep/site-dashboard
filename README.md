@@ -33,6 +33,10 @@ in the database, so keep it (changing it makes saved tokens unreadable).
 
 ## Connect a site
 
+Spinning up a whole new site? The site template repo has the full walkthrough in
+`NEW-SITE.md` (copy the repo, config, logo, products, domain, then connect it here).
+
+
 **Connect a site** → name, live URL, GitHub repo + token, Shopify domain + token
 (+ collection). Everything can be filled in later under Settings.
 
