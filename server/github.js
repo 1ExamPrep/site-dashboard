@@ -15,9 +15,10 @@ async function getFile(token, repo, path, branch) {
   catch (e) { if (/404/.test(e.message)) return null; throw e; }
 }
 async function putFile(token, repo, path, branch, content, message) {
+  const isBuf = Buffer.isBuffer(content);
   const cur = await getFile(token, repo, path, branch);
-  if (cur && cur.content === content) return { unchanged: true };
-  const d = await gh(token, "PUT", `/repos/${repo}/contents/${path}`, { message, content: Buffer.from(content, "utf8").toString("base64"), branch, sha: cur ? cur.sha : undefined, committer: { name: "site-dashboard", email: "dashboard@users.noreply.github.com" } });
+  if (cur && !isBuf && cur.content === content) return { unchanged: true };
+  const d = await gh(token, "PUT", `/repos/${repo}/contents/${path}`, { message, content: (isBuf ? content : Buffer.from(content, "utf8")).toString("base64"), branch, sha: cur ? cur.sha : undefined, committer: { name: "site-dashboard", email: "dashboard@users.noreply.github.com" } });
   return { sha: d.commit && d.commit.sha };
 }
 async function deleteFile(token, repo, path, branch, message) {

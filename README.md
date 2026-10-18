@@ -76,6 +76,18 @@ Same slug again updates the post; `{"action": "delete", "slug": "…"}` removes 
 response is JSON with the live URL. "Pull posts from the repo" imports posts that were
 written by hand into `content/posts/`.
 
+### Rankwork
+
+Rankwork posts arrive signed on the same URL (no `?secret=` needed). In Rankwork: Integration
+→ Webhooks → Add endpoint with the site's hook URL, tick **Publish a page or blog post**
+(`page.publish`), copy the `whsec_` signing secret and paste it on the site's Blog page.
+The dashboard verifies `X-Rankwork-Signature` (HMAC-SHA256 over `timestamp.rawBody`,
+5-minute window), stores the post keyed on `pageId` (republish = update; a changed handle
+renames the file and writes `content/redirects.json` so the old URL redirects), commits the
+hero image to `content/images/`, uses `metaTitle`/`metaDescription` for the page's title and
+description, and answers within the 10-second limit (GitHub work finishes in the background
+if needed). Test sends are stored as drafts. `kind: page` publishes under `/pages/<handle>/`.
+
 ## What runs automatically
 
 - **Weekly product sync** per site (day and hour set in Settings; hourly check).

@@ -7,7 +7,7 @@ const TZ = process.env.TZ_NAME || "America/Chicago";
 const app = express();
 app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
-app.use(express.json({ limit: "2mb", type: ["application/json", "text/plain"] }));
+app.use(express.json({ limit: "6mb", type: ["application/json", "text/plain"], verify: (req, res, buf) => { req.rawBody = buf.toString("utf8"); } }));
 app.use(express.urlencoded({ extended: false, limit: "2mb" }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "..", "public"), { maxAge: "1h" }));
@@ -218,11 +218,20 @@ app.post("/sites/:slug/blog/pull-shopify", auth, site, async (req, res) => {
 });
 app.post("/sites/:slug/blog/secret", auth, site, async (req, res) => { await db.run("UPDATE sites SET webhook_secret=? WHERE id=?", [blog.newSecret(), req.site.id]); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent("New webhook secret generated. Update it in the tool that sends posts.")); });
 
-/* public webhook: any tool can push a post. Auth: Authorization: Bearer <secret> (or X-Webhook-Secret / ?secret=). */
+/* public webhook: any tool can push a post.
+   Auth: a Rankwork signature (X-Rankwork-Signature, HMAC over the raw body with the site's whsec_ secret), or Authorization: Bearer <secret> (or X-Webhook-Secret / ?secret=). */
 app.post("/hooks/blog/:key", async (req, res) => {
   const site = await db.get("SELECT * FROM sites WHERE site_key=?", [req.params.key]); if (!site) return res.status(404).json({ ok: false, error: "unknown site key" });
-  if (!blog.secretOk(req, site)) return res.status(401).json({ ok: false, error: "bad or missing secret" });
   const b = typeof req.body === "string" ? (() => { try { return JSON.parse(req.body); } catch (e) { return { _raw: req.body.slice(0, 2000) }; } })() : (req.body || {});
+  const sig = req.headers["x-rankwork-signature"];
+  if (sig) {
+    const rw = db.dec(site.rankwork_secret_enc);
+    if (!rw) { await blog.logHook(site.id, req.headers["x-rankwork-event"] || b.event, "error", "Rankwork request received but no signing secret is saved for this site", { headers: { event: req.headers["x-rankwork-event"], delivery: req.headers["x-rankwork-delivery"] }, body: b }); return res.status(401).json({ ok: false, error: "This site has no Rankwork signing secret yet. Paste the whsec_ secret into the dashboard (Blog page, Rankwork panel) and send again." }); }
+    const v = blog.verifyRankwork(req.rawBody || "", sig, rw);
+    if (!v.ok) { await blog.logHook(site.id, req.headers["x-rankwork-event"] || b.event, "error", "Rankwork signature rejected: " + v.why, { body: b }); return res.status(401).json({ ok: false, error: "Signature rejected: " + v.why + ". Check that the whsec_ secret in the dashboard matches this endpoint." }); }
+    return rankworkDelivery(req, res, site, b);
+  }
+  if (!blog.secretOk(req, site)) return res.status(401).json({ ok: false, error: "bad or missing secret" });
   const p = blog.fromPayload(b);
   try {
     if (/^delete$/i.test(String(b.action || "")) || /delet|remov|unpublish/i.test(p.event)) {
@@ -244,6 +253,32 @@ app.post("/hooks/blog/:key", async (req, res) => {
     await blog.logHook(site.id, p.event, "ok", `${r.unchanged ? "Unchanged" : r.post.status === "draft" ? "Draft saved" : "Published"} "${r.post.title}" (from ${via})${r.url ? " → " + r.url : ""}`, b);
     res.json({ ok: true, action: r.unchanged ? "unchanged" : "saved", slug: r.post.slug, status: r.post.status, url: r.url, commit: r.commit, build_triggered: r.built, note: r.note });
   } catch (e) { await blog.logHook(site.id, p.event, "error", e.message, b); res.status(e.status || 500).json({ ok: false, error: e.message }); }
+});
+/* Rankwork: page.publish carries the post; everything else is a notification. Must answer within 10 s. */
+async function rankworkDelivery(req, res, site, b) {
+  const event = String(req.headers["x-rankwork-event"] || b.event || ""); const d = b.data || {}; const isTest = b.test === true;
+  const logBody = { event, delivery: req.headers["x-rankwork-delivery"], test: isTest, data: { ...d, html: d.html ? `(${String(d.html).length} chars)` : d.html, heroImageBase64: d.heroImageBase64 ? `(${String(d.heroImageBase64).length} chars base64)` : d.heroImageBase64 } };
+  if (event !== "page.publish") { await blog.logHook(site.id, event, "ok", `Notification received${d.title ? `: "${d.title}"` : ""}; only page.publish carries a post`, logBody); return res.json({ ok: true, note: `${event} noted; posts are published from page.publish` }); }
+  const p = blog.fromRankwork(d);
+  if (!p.title || !p.body) { await blog.logHook(site.id, event, "ignored", "page.publish without title or html", logBody); return res.status(400).json({ ok: false, error: "The payload had no title or html, so there was nothing to publish." }); }
+  try {
+    const source = isTest ? "rankwork test" : "rankwork"; if (isTest) p.status = "draft";
+    const { row, oldSlug, imageFile } = await blog.store(site, p, source);
+    const url = blog.postUrl(site, row);
+    // reply fast; GitHub commits continue in the background if they take long
+    const work = blog.publish(site, row, oldSlug, imageFile).then(r => { blog.logHook(site.id, event, "ok", `${isTest ? "Test post stored as a draft" : r.unchanged ? "Unchanged" : "Published"} "${row.title.slice(0, 60)}"${r.url ? " → " + r.url : ""}${p.heroNote ? " (hero: " + p.heroNote + ")" : ""}`, logBody); return r; })
+      .catch(e => { blog.logHook(site.id, event, "error", "stored, but GitHub publish failed: " + e.message, logBody); return { error: e.message }; });
+    const r = await Promise.race([work, new Promise(ok => setTimeout(() => ok({ pending: true }), 6500))]);
+    if (r.error) return res.status(502).json({ ok: false, error: "The post was stored but could not be committed to the site: " + r.error });
+    res.json({ ok: true, url, pageId: p.external_id, slug: row.slug, status: row.status, note: isTest ? "Test received and stored as a draft in the dashboard." : r.pending ? "Stored; the site is being updated in the background and the post appears at the URL in about a minute." : (r.note || "published") });
+  } catch (e) { await blog.logHook(site.id, event, "error", e.message, logBody); res.status(e.status || 500).json({ ok: false, error: "Could not store the post: " + e.message }); }
+}
+app.post("/sites/:slug/blog/rankwork", auth, site, async (req, res) => {
+  const sec = String(req.body.rankwork_secret || "").trim();
+  if (req.body.clear) { await db.run("UPDATE sites SET rankwork_secret_enc='' WHERE id=?", [req.site.id]); return res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent("Rankwork secret removed")); }
+  if (!/^whsec_/.test(sec)) return res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent("That does not look like a Rankwork signing secret (it starts with whsec_)."));
+  await db.run("UPDATE sites SET rankwork_secret_enc=? WHERE id=?", [db.enc(sec), req.site.id]);
+  res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent("Rankwork signing secret saved. Press Test on the endpoint in Rankwork."));
 });
 app.get("/hooks/blog/:key", (req, res) => res.json({ ok: true, hint: "POST JSON here with Authorization: Bearer <webhook secret>. Fields: title, body (markdown or HTML), slug?, excerpt?, image?, tags?, author?, date?, status?, state?, level?, action?: 'delete'" }));
 
