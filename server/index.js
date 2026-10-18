@@ -208,6 +208,14 @@ app.post("/sites/:slug/blog/:id/delete", auth, site, async (req, res) => {
   try { await blog.remove(req.site, p); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent(`Removed "${p.title}"`)); } catch (e) { res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent(e.message)); }
 });
 app.post("/sites/:slug/blog/import", auth, site, async (req, res) => { try { const n = await blog.importFromRepo(req.site); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent(`Imported ${n} post${n === 1 ? "" : "s"} from the repo`)); } catch (e) { res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent(e.message)); } });
+app.post("/sites/:slug/blog/pull-shopify", auth, site, async (req, res) => {
+  try {
+    const cred = db.dec(req.site.shopify_token_enc); if (!req.site.shopify_domain || !cred) throw new Error("Connect Shopify first");
+    const arts = await shopify.listArticles(req.site.shopify_domain, cred, 50); let n = 0;
+    for (const a of arts) { if (!a.body) continue; const p = blog.fromArticle(a); await blog.save(req.site, p, "shopify"); n++; }
+    res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent(`Pulled ${n} article${n === 1 ? "" : "s"} from the Shopify blog`));
+  } catch (e) { res.redirect(`/sites/${req.site.slug}/blog?err=` + encodeURIComponent(e.message.includes("ACCESS_DENIED") || /read_content/.test(e.message) ? "Shopify says the app lacks the read_content scope. Add it in the Dev Dashboard (new version, then reinstall)." : e.message)); }
+});
 app.post("/sites/:slug/blog/secret", auth, site, async (req, res) => { await db.run("UPDATE sites SET webhook_secret=? WHERE id=?", [blog.newSecret(), req.site.id]); res.redirect(`/sites/${req.site.slug}/blog?ok=` + encodeURIComponent("New webhook secret generated. Update it in the tool that sends posts.")); });
 
 /* public webhook: any tool can push a post. Auth: Authorization: Bearer <secret> (or X-Webhook-Secret / ?secret=). */
@@ -222,13 +230,18 @@ app.post("/hooks/blog/:key", async (req, res) => {
       if (!post) { await blog.logHook(site.id, p.event || "delete", "ignored", "no post with slug " + slug, b); return res.status(202).json({ ok: true, ignored: true, reason: "no post with slug " + slug }); }
       await blog.remove(site, post); await blog.logHook(site.id, p.event || "delete", "ok", `Removed "${post.title}"`, b); return res.json({ ok: true, action: "deleted", slug });
     }
-    if (!p.title || !p.body) {
-      const keys = Object.keys(b || {}).slice(0, 25).join(", ");
-      await blog.logHook(site.id, p.event, "ignored", `${!p.title ? "no title" : "no body"}; top-level keys: ${keys || "(none)"}`, b);
-      return res.status(202).json({ ok: true, ignored: true, reason: (!p.title ? "no title found" : "no body/content found") + " in the payload", keys_seen: Object.keys(b || {}) });
+    const kind = String((b.data && b.data.kind) || b.kind || "").toLowerCase();
+    if (kind && kind !== "blog" && kind !== "article" && kind !== "post") { await blog.logHook(site.id, p.event, "ignored", `kind "${kind}" is not a blog post`, b); return res.status(202).json({ ok: true, ignored: true, reason: `kind ${kind} is not a blog post` }); }
+    if (b.test === true && /example\.com|00000000-0000/.test(JSON.stringify(b.data || {}))) { await blog.logHook(site.id, p.event, "ok", `Test ping received from ${String((b.data || {}).author || "your tool")}. Connection works; real posts will be published.`, b); return res.json({ ok: true, test: true, note: "test ping received; real posts will be published" }); }
+    let post = p, via = "payload";
+    if (!p.body) {
+      const f = await blog.fetchFromSource(site, b, p);
+      if (!f.post) { await blog.logHook(site.id, p.event, "ignored", `no body in the payload and could not fetch it: ${f.reason}`, b); return res.status(202).json({ ok: true, ignored: true, reason: "no body in the payload; " + f.reason }); }
+      post = f.post; via = f.via;
     }
-    const r = await blog.save(site, p, "webhook");
-    await blog.logHook(site.id, p.event, "ok", `${r.unchanged ? "Unchanged" : r.post.status === "draft" ? "Draft saved" : "Published"} "${r.post.title}"${r.url ? " → " + r.url : ""}`, b);
+    if (!post.title) { await blog.logHook(site.id, p.event, "ignored", `no title; top-level keys: ${Object.keys(b || {}).slice(0, 25).join(", ")}`, b); return res.status(202).json({ ok: true, ignored: true, reason: "no title found in the payload" }); }
+    const r = await blog.save(site, post, "webhook");
+    await blog.logHook(site.id, p.event, "ok", `${r.unchanged ? "Unchanged" : r.post.status === "draft" ? "Draft saved" : "Published"} "${r.post.title}" (from ${via})${r.url ? " → " + r.url : ""}`, b);
     res.json({ ok: true, action: r.unchanged ? "unchanged" : "saved", slug: r.post.slug, status: r.post.status, url: r.url, commit: r.commit, build_triggered: r.built, note: r.note });
   } catch (e) { await blog.logHook(site.id, p.event, "error", e.message, b); res.status(e.status || 500).json({ ok: false, error: e.message }); }
 });

@@ -104,5 +104,32 @@ function secretOk(req, site) {
   if (!site.webhook_secret || !given || given.length !== site.webhook_secret.length) return false;
   return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(site.webhook_secret));
 }
+/* turn a Shopify article into a post payload */
+function fromArticle(a, extra = {}) {
+  return fromPayload({ title: a.title, body: a.body || "", slug: a.handle, excerpt: a.summary ? a.summary.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "", image: a.image && a.image.url, tags: a.tags || [],
+    author: a.author && a.author.name, date: a.publishedAt, status: a.isPublished === false ? "draft" : "published", ...extra });
+}
+/* webhook pings without a body (Rankwork, Shopify flow, etc.): pull the article from Shopify, or scrape the public page */
+async function fetchFromSource(site, b, p) {
+  const o = (b && b.data && typeof b.data === "object") ? b.data : (b || {});
+  const admin = String(o.adminUrl || o.admin_url || "");
+  const m = admin.match(/\/articles\/(\d+)/) || String(o.articleId || o.article_id || "").match(/(\d+)$/);
+  const cred = db.dec(site.shopify_token_enc); const shopify = require("./shopify");
+  if (m && site.shopify_domain && cred) {
+    try { const a = await shopify.getArticle(site.shopify_domain, cred, m[1]); if (a && a.body) return { post: fromArticle(a, { tags: a.tags && a.tags.length ? a.tags : p.tags }), via: "shopify article " + m[1] }; }
+    catch (e) { var shopErr = e.message; }
+  }
+  const url = String(o.url || o.link || o.permalink || "");
+  if (/^https?:\/\//.test(url) && !/example\.com/.test(url)) {
+    try {
+      const r = await fetch(url, { headers: { "User-Agent": "site-dashboard/1.0" }, redirect: "follow" }); const html = await r.text();
+      const meta = (n) => { const mm = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${n}["'][^>]+content=["']([^"']+)`, "i")) || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${n}["']`, "i")); return mm ? mm[1] : ""; };
+      let body = ""; const cand = html.match(/<div[^>]+class=["'][^"']*(?:article__content|article-content|rte|blog-post__content|article__body)[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<footer|<section|<aside|<\/article)/i) || html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+      if (cand) body = cand[1].replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").trim();
+      if (body.replace(/<[^>]+>/g, "").trim().length > 200) return { post: fromPayload({ title: p.title || meta("og:title"), body, excerpt: meta("og:description") || meta("description"), image: meta("og:image"), tags: p.tags, author: p.author, date: p.date, slug: url.replace(/\/+$/, "").split("/").pop() }), via: "public page" };
+    } catch (e) { var pageErr = e.message; }
+  }
+  return { post: null, reason: [m ? "" : "no Shopify article id in the payload", shopErr ? "Shopify: " + shopErr : "", pageErr ? "page: " + pageErr : "", "the app needs the read_content scope to read blog articles"].filter(Boolean).join("; ") };
+}
 async function logHook(siteId, event, status, note, payload) { try { await db.run("INSERT INTO webhook_log (site_id, event, status, note, payload) VALUES (?,?,?,?,?)", [siteId, String(event || "").slice(0, 80), status, String(note || "").slice(0, 500), JSON.stringify(payload).slice(0, 6000)]); await db.run("DELETE FROM webhook_log WHERE site_id=? AND id NOT IN (SELECT id FROM webhook_log WHERE site_id=? ORDER BY id DESC LIMIT 30)", [siteId, siteId]); } catch (e) {} }
-module.exports = { logHook, fromPayload, fileFor, parseFile, save, publish, remove, importFromRepo, newSecret, secretOk, slugify };
+module.exports = { logHook, fromArticle, fetchFromSource, fromPayload, fileFor, parseFile, save, publish, remove, importFromRepo, newSecret, secretOk, slugify };

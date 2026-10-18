@@ -55,6 +55,16 @@ async function fetchCollection(domain, token, collectionId, onPage) {
   }
   return { title, nodes: nodes.filter(n => n.status === "ACTIVE") };
 }
+/* one blog article (needs the read_content scope) */
+async function getArticle(domain, cred, articleId) {
+  const d = await gql(domain, cred, `query($id: ID!) { article(id: $id) { id title handle body summary tags publishedAt isPublished author { name } image { url altText } blog { handle title } } }`, { id: "gid://shopify/Article/" + articleId });
+  return d.article;
+}
+/* recent published articles across the store's blogs (for mirroring without a webhook) */
+async function listArticles(domain, cred, limit = 50) {
+  const d = await gql(domain, cred, `query($n: Int!) { articles(first: $n, sortKey: PUBLISHED_AT, reverse: true, query: "published_status:published") { edges { node { id title handle body summary tags publishedAt isPublished author { name } image { url } blog { handle title } } } } }`, { n: limit });
+  return d.articles.edges.map(e => e.node);
+}
 async function listCollections(domain, token) {
   const d = await gql(domain, token, `{ collections(first: 100, sortKey: TITLE) { edges { node { id title productsCount { count } } } } }`, {});
   return d.collections.edges.map(e => ({ id: e.node.id.split("/").pop(), title: e.node.title, count: e.node.productsCount.count }));
@@ -121,4 +131,4 @@ function toCatalog(nodes) {
 function catalogJs(cat, note) {
   return `/* Auto-generated from Shopify by the site dashboard${note ? " (" + note + ")" : ""}, pulled ${new Date().toISOString().slice(0, 10)}. ${cat.length} products. Regenerate rather than hand-edit. */\nwindow.CATALOG=${JSON.stringify(cat)};\nwindow.CATALOG_STATES=${JSON.stringify(STATES)};\n`;
 }
-module.exports = { resolveToken, shopInfo, fetchCollection, listCollections, recentOrders, toCatalog, catalogJs, STATES };
+module.exports = { resolveToken, getArticle, listArticles, shopInfo, fetchCollection, listCollections, recentOrders, toCatalog, catalogJs, STATES };
