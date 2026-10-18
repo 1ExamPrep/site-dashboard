@@ -44,7 +44,7 @@ function verifyRankwork(rawBody, header, secret) {
     return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given)) ? { ok: true } : { ok: false, why: "signature does not match" };
   } catch (e) { return { ok: false, why: "malformed signature header" }; }
 }
-const textOf = h => String(h || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+const textOf = h => String(h || "").replace(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").replace(/^summary\s*:?\s*/i, "").trim();
 /* page.publish payload -> post (see Rankwork docs: pageId, kind, title, handle, metaTitle, metaDescription, summaryHtml, html, author, tags, heroImageBase64, updatedAt) */
 function fromRankwork(d) {
   d = d || {};
@@ -88,7 +88,7 @@ async function store(site, p, source, opts = {}) {
   if (cur && cur.slug !== p.slug) { oldSlug = cur.slug; if (!oldSlugs.includes(cur.slug)) oldSlugs.push(cur.slug); }
   oldSlugs = oldSlugs.filter(x => x !== p.slug);
   const imgExt = opts.imageFile ? opts.imageFile.ext : (p.imageFile ? p.imageFile.ext : null); const imageFile = opts.imageFile || p.imageFile || null;
-  if (imageFile) p.image = (site.url ? site.url.replace(/\/$/, "") : "") + `/content/images/${p.slug}.${imgExt}`;
+  if (imageFile) p.image = `/content/images/${p.slug}.${imgExt}`;  // site-relative; build.py makes it absolute for og:image and schema
   else if (cur && !p.image) p.image = cur.image || "";
   if (cur) await db.run(`UPDATE posts SET ${COLS.map(c => c + "=?").join(", ")}, slug=?, old_slugs=?, source=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, [...COLS.map(c => p[c] || ""), p.slug, oldSlugs.join(","), source, cur.id]);
   else await db.run(`INSERT INTO posts (site_id, slug, old_slugs, ${COLS.join(", ")}, source) VALUES (?,?,?,${COLS.map(() => "?").join(",")},?)`, [site.id, p.slug, oldSlugs.join(","), ...COLS.map(c => p[c] || ""), source]);
