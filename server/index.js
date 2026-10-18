@@ -193,7 +193,8 @@ app.get("/sites/:slug/blog", auth, site, async (req, res) => {
   await ensureSecret(req.site);
   const posts = await db.all("SELECT id, slug, title, status, date, author, tags, source, updated_at, commit_sha FROM posts WHERE site_id=? ORDER BY date DESC, id DESC", [req.site.id]);
   const logs = await db.all("SELECT * FROM sync_log WHERE site_id=? AND kind='blog' ORDER BY id DESC LIMIT 12", [req.site.id]);
-  res.send(V.blogPage(req.ctx, req.site, posts, logs));
+  const hooks = await db.all("SELECT * FROM webhook_log WHERE site_id=? ORDER BY id DESC LIMIT 15", [req.site.id]);
+  res.send(V.blogPage(req.ctx, req.site, posts, logs, hooks));
 });
 app.get("/sites/:slug/blog/new", auth, site, (req, res) => res.send(V.blogEditPage(req.ctx, req.site, null)));
 app.get("/sites/:slug/blog/:id/edit", auth, site, async (req, res) => { const p = await db.get("SELECT * FROM posts WHERE id=? AND site_id=?", [req.params.id, req.site.id]); if (!p) return res.status(404).send("No such post"); res.send(V.blogEditPage(req.ctx, req.site, p)); });
@@ -213,16 +214,23 @@ app.post("/sites/:slug/blog/secret", auth, site, async (req, res) => { await db.
 app.post("/hooks/blog/:key", async (req, res) => {
   const site = await db.get("SELECT * FROM sites WHERE site_key=?", [req.params.key]); if (!site) return res.status(404).json({ ok: false, error: "unknown site key" });
   if (!blog.secretOk(req, site)) return res.status(401).json({ ok: false, error: "bad or missing secret" });
-  const b = typeof req.body === "string" ? (() => { try { return JSON.parse(req.body); } catch (e) { return {}; } })() : (req.body || {});
+  const b = typeof req.body === "string" ? (() => { try { return JSON.parse(req.body); } catch (e) { return { _raw: req.body.slice(0, 2000) }; } })() : (req.body || {});
+  const p = blog.fromPayload(b);
   try {
-    if (/^delete$/i.test(String(b.action || ""))) {
-      const slug = blog.slugify(b.slug || b.title); const p = await db.get("SELECT * FROM posts WHERE site_id=? AND slug=?", [site.id, slug]);
-      if (!p) return res.status(404).json({ ok: false, error: "no post with slug " + slug });
-      await blog.remove(site, p); return res.json({ ok: true, action: "deleted", slug });
+    if (/^delete$/i.test(String(b.action || "")) || /delet|remov|unpublish/i.test(p.event)) {
+      const slug = blog.slugify(b.slug || p.slug || p.title); const post = await db.get("SELECT * FROM posts WHERE site_id=? AND slug=?", [site.id, slug]);
+      if (!post) { await blog.logHook(site.id, p.event || "delete", "ignored", "no post with slug " + slug, b); return res.status(202).json({ ok: true, ignored: true, reason: "no post with slug " + slug }); }
+      await blog.remove(site, post); await blog.logHook(site.id, p.event || "delete", "ok", `Removed "${post.title}"`, b); return res.json({ ok: true, action: "deleted", slug });
     }
-    const p = blog.fromPayload(b); const r = await blog.save(site, p, "webhook");
+    if (!p.title || !p.body) {
+      const keys = Object.keys(b || {}).slice(0, 25).join(", ");
+      await blog.logHook(site.id, p.event, "ignored", `${!p.title ? "no title" : "no body"}; top-level keys: ${keys || "(none)"}`, b);
+      return res.status(202).json({ ok: true, ignored: true, reason: (!p.title ? "no title found" : "no body/content found") + " in the payload", keys_seen: Object.keys(b || {}) });
+    }
+    const r = await blog.save(site, p, "webhook");
+    await blog.logHook(site.id, p.event, "ok", `${r.unchanged ? "Unchanged" : r.post.status === "draft" ? "Draft saved" : "Published"} "${r.post.title}"${r.url ? " → " + r.url : ""}`, b);
     res.json({ ok: true, action: r.unchanged ? "unchanged" : "saved", slug: r.post.slug, status: r.post.status, url: r.url, commit: r.commit, build_triggered: r.built, note: r.note });
-  } catch (e) { res.status(e.status || 500).json({ ok: false, error: e.message }); }
+  } catch (e) { await blog.logHook(site.id, p.event, "error", e.message, b); res.status(e.status || 500).json({ ok: false, error: e.message }); }
 });
 app.get("/hooks/blog/:key", (req, res) => res.json({ ok: true, hint: "POST JSON here with Authorization: Bearer <webhook secret>. Fields: title, body (markdown or HTML), slug?, excerpt?, image?, tags?, author?, date?, status?, state?, level?, action?: 'delete'" }));
 

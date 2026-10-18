@@ -7,17 +7,29 @@ const slugify = s => String(s || "").toLowerCase().normalize("NFKD").replace(/[�
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: process.env.TZ_NAME || "America/Chicago" });
 const tagsOf = t => Array.isArray(t) ? t.map(x => String(x).trim()).filter(Boolean) : String(t || "").split(/[,;]/).map(x => x.trim()).filter(Boolean);
 
-/* normalise any payload (webhook JSON, form body) into a post */
+/* normalise any payload (webhook JSON from any tool, or the editor form) into a post */
+const str = v => { if (v == null) return ""; if (typeof v === "object") { if (Array.isArray(v)) return ""; return str(v.url || v.src || v.href || v.html || v.markdown || v.text || v.value || v.name || v.title || ""); } return String(v); };
+function pick(o, keys) { for (const k of keys) { const v = str(o && o[k]); if (v.trim()) return v.trim(); } return ""; }
+function unwrap(b) {
+  // tools often nest the record: {event, data:{…}} / {page:{…}} / {post:{…}} / {payload:{…}}
+  let o = b && typeof b === "object" ? b : {}; const ev = pick(o, ["event", "type", "topic", "event_type"]);
+  for (let i = 0; i < 3; i++) { const inner = ["data", "page", "post", "article", "payload", "record", "item", "object", "result", "content"].map(k => o[k]).find(v => v && typeof v === "object" && !Array.isArray(v) && (v.title || v.headline || v.body || v.html || v.content || v.markdown)); if (!inner) break; o = { ...o, ...inner }; }
+  return { o, ev };
+}
 function fromPayload(b) {
-  const title = String(b.title || b.headline || b.name || "").trim();
-  const body = String(b.body || b.content || b.markdown || b.html || b.text || "").replace(/\r\n/g, "\n").trim();
-  const date = String(b.date || b.published_at || b.publishedAt || "").slice(0, 10);
+  const { o, ev } = unwrap(b);
+  const title = pick(o, ["title", "headline", "name", "seo_title", "h1", "page_title"]);
+  const body = pick(o, ["body", "content", "markdown", "html", "body_html", "content_html", "article", "text", "body_markdown", "content_markdown"]).replace(/\r\n/g, "\n");
+  const date = pick(o, ["date", "published_at", "publishedAt", "publish_date", "created_at", "createdAt"]).slice(0, 10);
+  const rawSlug = pick(o, ["slug", "handle", "path", "url_slug"]); const slugSrc = rawSlug ? rawSlug.replace(/\/+$/, "").split("/").pop() : title;
+  const tagsRaw = o.tags || o.keywords || o.categories || o.topics; const tags = Array.isArray(tagsRaw) ? tagsRaw.map(t => typeof t === "object" ? str(t) : String(t)) : tagsRaw;
+  const status = pick(o, ["status", "state_name"]);
   return {
-    title, body, slug: slugify(b.slug || title), date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : today(),
-    status: /^draft$/i.test(String(b.status || "")) || b.draft === true ? "draft" : "published",
-    author: String(b.author || "").trim(), excerpt: String(b.excerpt || b.description || b.summary || "").trim().slice(0, 300),
-    image: String(b.image || b.cover || b.featured_image || b.imageUrl || "").trim(), tags: tagsOf(b.tags || b.keywords).join(", "),
-    state: String(b.state || "").trim(), level: String(b.level || "").trim(),
+    title, body, slug: slugify(slugSrc), date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : today(),
+    status: /draft|unpublish|pending|hidden/i.test(status) || o.draft === true || o.published === false ? "draft" : "published",
+    author: pick(o, ["author", "author_name", "byline", "writer"]), excerpt: pick(o, ["excerpt", "description", "meta_description", "summary", "seo_description", "subtitle"]).slice(0, 300),
+    image: pick(o, ["image", "cover", "featured_image", "imageUrl", "image_url", "og_image", "hero_image", "thumbnail", "cover_image"]), tags: tagsOf(tags).join(", "),
+    state: pick(o, ["state", "us_state"]), level: pick(o, ["level", "license_level"]), event: ev,
   };
 }
 
@@ -39,6 +51,7 @@ async function save(site, p, source, opts = {}) {
   if (!p.slug) p.slug = slugify(p.title) || "post";
   const cur = await db.get("SELECT id, slug FROM posts WHERE site_id=? AND slug=?", [site.id, p.slug]);
   const cols = ["title", "status", "date", "author", "excerpt", "image", "tags", "state", "level", "body"];
+  if (p.state && !/^[A-Za-z .]{2,30}$/.test(p.state)) p.state = "";
   if (cur) await db.run(`UPDATE posts SET ${cols.map(c => c + "=?").join(", ")}, source=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, [...cols.map(c => p[c]), source, cur.id]);
   else await db.run(`INSERT INTO posts (site_id, slug, ${cols.join(", ")}, source) VALUES (?,?,${cols.map(() => "?").join(",")},?)`, [site.id, p.slug, ...cols.map(c => p[c]), source]);
   const row = await db.get("SELECT * FROM posts WHERE site_id=? AND slug=?", [site.id, p.slug]);
@@ -91,4 +104,5 @@ function secretOk(req, site) {
   if (!site.webhook_secret || !given || given.length !== site.webhook_secret.length) return false;
   return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(site.webhook_secret));
 }
-module.exports = { fromPayload, fileFor, parseFile, save, publish, remove, importFromRepo, newSecret, secretOk, slugify };
+async function logHook(siteId, event, status, note, payload) { try { await db.run("INSERT INTO webhook_log (site_id, event, status, note, payload) VALUES (?,?,?,?,?)", [siteId, String(event || "").slice(0, 80), status, String(note || "").slice(0, 500), JSON.stringify(payload).slice(0, 6000)]); await db.run("DELETE FROM webhook_log WHERE site_id=? AND id NOT IN (SELECT id FROM webhook_log WHERE site_id=? ORDER BY id DESC LIMIT 30)", [siteId, siteId]); } catch (e) {} }
+module.exports = { logHook, fromPayload, fileFor, parseFile, save, publish, remove, importFromRepo, newSecret, secretOk, slugify };
