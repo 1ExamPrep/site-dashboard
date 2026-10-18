@@ -128,7 +128,7 @@ function blogsPage(ctx, sites, posts, counts) {
     <div style="margin-bottom:1rem">${pick}</div>${panel("Webhooks, one per site", hooks)}${panel("All posts", list, "newest first")}` });
 }
 function blogEditPage(ctx, site, p) {
-  const v = p || { title: "", slug: "", status: "published", date: new Date().toLocaleDateString("en-CA", { timeZone: process.env.TZ_NAME || "America/Chicago" }), author: site.name.includes("Exam") ? "1 Exam Prep" : "", excerpt: "", image: "", tags: "", state: "", level: "", body: "" };
+  const v = p || { title: "", slug: "", status: "published", date: new Date().toLocaleDateString("en-CA", { timeZone: process.env.TZ_NAME || "America/Chicago" }), author: site.name, excerpt: "", image: "", tags: "", state: "", level: "", body: "" };
   const f = (name, label, value, help, attrs = "") => `<label>${esc(label)}<input name="${name}" value="${esc(value || "")}" ${attrs}>${help ? `<small>${help}</small>` : ""}</label>`;
   return layout({ ...ctx, site, title: p ? "Edit post" : "Write a post", section: "blog", body: `<form method="post" action="/sites/${site.slug}/blog/save" class="form"><input type="hidden" name="old_slug" value="${esc(v.slug)}">
     ${panel("Post", `${f("title", "Title", v.title, "", "required")}<div class="grid2">${f("slug", "URL slug", v.slug, "leave empty to make it from the title; the page will be /blog/&lt;slug&gt;/")}${f("date", "Date", v.date, "", 'type="date"')}${f("author", "Author", v.author)}<label>Status<select name="status"><option value="published" ${v.status === "published" ? "selected" : ""}>Published</option><option value="draft" ${v.status === "draft" ? "selected" : ""}>Draft (kept off the site)</option></select></label></div>
