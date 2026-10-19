@@ -82,7 +82,6 @@ pre.code.small{font-size:.72rem;max-height:260px;overflow:auto;white-space:pre-w
 ol.steps{margin:.5rem 0 1rem 1.2rem;padding:0;line-height:1.55}ol.steps li{margin:.35rem 0}ol.steps pre{margin:.4rem 0}
 
 /* users and account */
-.side-foot a+a{margin-left:.7rem}
 .side-foot .pill{font-style:normal;font-size:.7rem;margin-left:.3rem}
 form.inline{display:inline}
 .cred{display:flex;flex-wrap:wrap;gap:.4rem 1.4rem;margin:.6rem 0;padding:.7rem .9rem;background:#fff;border-radius:10px;border:1px dashed var(--line)}
@@ -91,4 +90,7 @@ form.inline{display:inline}
 td select{font:inherit;padding:.3rem .5rem;border-radius:8px;border:1px solid var(--line);background:#fff}
 /* viewers: hide controls that would only lead to "view only" */
 .viewer form[method=post]:not(.keep),.viewer a[href="/sites/new"],.viewer a[href$="/settings"],.viewer a[href*="/blog/new"],.viewer a[href$="/edit"],.viewer .switch-list .add{display:none!important}
-.side-foot{flex-wrap:wrap}
+.side-foot{flex-direction:column;align-items:stretch;gap:.45rem}
+.side-foot .who{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bdbdbd}
+.side-links{display:flex;flex-wrap:wrap;gap:.35rem 1rem}
+.side-links a{white-space:nowrap}
