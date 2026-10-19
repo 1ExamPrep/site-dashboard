@@ -55,6 +55,54 @@ async function fetchCollection(domain, token, collectionId, onPage) {
   }
   return { title, nodes: nodes.filter(n => n.status === "ACTIVE") };
 }
+/* "415498701, 30640177209" or "gid://shopify/Collection/415498701" -> ["415498701", "30640177209"] */
+function parseCollections(v) {
+  return [...new Set(String(v || "").split(/[\s,;|]+/).map(x => x.trim().replace(/^gid:\/\/shopify\/Collection\//i, "")).filter(x => /^\d+$/.test(x)))];
+}
+/* several collections, merged; a product in more than one collection is kept once */
+async function fetchCollections(domain, token, ids, onPage) {
+  const seen = new Map(); const titles = [];
+  for (let i = 0; i < ids.length; i++) {
+    const r = await fetchCollection(domain, token, ids[i], (got, total, t) => onPage && onPage(got, total, ids.length > 1 ? `${t} (collection ${i + 1} of ${ids.length})` : t));
+    titles.push(r.title); for (const n of r.nodes) seen.set(n.id, n);
+  }
+  return { title: titles.join(" + "), nodes: [...seen.values()] };
+}
+
+/* Raw mode, for sites whose repo turns Shopify data into its own catalog format (declared in the repo's
+   site-sync.json). The dashboard pulls the products and commits them untouched; the site's build does the rest. */
+const RAW_FIELDS = `edges { node { id title handle status productType vendor tags onlineStoreUrl descriptionHtml
+    featuredImage { url altText } images(first: 6) { edges { node { url altText } } }
+    priceRangeV2 { minVariantPrice { amount } maxVariantPrice { amount } }
+    variants(first: 10) { edges { node { id title price compareAtPrice availableForSale } } } } }
+  pageInfo { hasNextPage endCursor }`;
+async function fetchRaw(domain, token, src, onPage) {
+  const out = new Map(); const label = [];
+  const add = nodes => { for (const n of nodes) if (n.status === "ACTIVE") out.set(n.id, n); };
+  if (src.query) {
+    let total = 0; try { const c = await gql(domain, token, `query($q: String!) { productsCount(query: $q, limit: null) { count } }`, { q: src.query }); total = c.productsCount.count; } catch (e) {}
+    let after = null, got = 0;
+    while (true) {
+      const d = await gql(domain, token, `query($q: String!, $first: Int!, $after: String) { products(query: $q, first: $first, after: $after) { ${RAW_FIELDS} } }`, { q: src.query, first: 50, after });
+      const c = d.products; add(c.edges.map(e => e.node)); got += c.edges.length;
+      if (onPage) onPage(got, total, `products matching ${src.query}`);
+      if (!c.pageInfo.hasNextPage) break; after = c.pageInfo.endCursor;
+    }
+    label.push(`products matching ${src.query}`);
+  }
+  for (const id of src.collections || []) {
+    let after = null, title = "";
+    while (true) {
+      const d = await gql(domain, token, `query($id: ID!, $first: Int!, $after: String) { collection(id: $id) { title products(first: $first, after: $after) { ${RAW_FIELDS} } } }`, { id: "gid://shopify/Collection/" + id, first: 50, after });
+      if (!d.collection) throw new Error("Collection not found: " + id);
+      title = d.collection.title; add(d.collection.products.edges.map(e => e.node));
+      if (onPage) onPage(out.size, 0, title);
+      if (!d.collection.products.pageInfo.hasNextPage) break; after = d.collection.products.pageInfo.endCursor;
+    }
+    label.push(title);
+  }
+  return { title: label.join(" + "), nodes: [...out.values()] };
+}
 /* one blog article (needs the read_content scope) */
 async function getArticle(domain, cred, articleId) {
   const d = await gql(domain, cred, `query($id: ID!) { article(id: $id) { id title handle body summary tags publishedAt isPublished author { name } image { url altText } blog { handle title } } }`, { id: "gid://shopify/Article/" + articleId });
@@ -131,4 +179,4 @@ function toCatalog(nodes) {
 function catalogJs(cat, note) {
   return `/* Auto-generated from Shopify by the site dashboard${note ? " (" + note + ")" : ""}, pulled ${new Date().toISOString().slice(0, 10)}. ${cat.length} products. Regenerate rather than hand-edit. */\nwindow.CATALOG=${JSON.stringify(cat)};\nwindow.CATALOG_STATES=${JSON.stringify(STATES)};\n`;
 }
-module.exports = { resolveToken, getArticle, listArticles, shopInfo, fetchCollection, listCollections, recentOrders, toCatalog, catalogJs, STATES };
+module.exports = { resolveToken, getArticle, listArticles, shopInfo, fetchCollection, fetchCollections, fetchRaw, parseCollections, listCollections, recentOrders, toCatalog, catalogJs, STATES };

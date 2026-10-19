@@ -27,12 +27,31 @@ function startJob(site, opts) {
   return j;
 }
 
+/* A site repo can declare how it wants products in site-sync.json at its root:
+     {"catalog": "raw", "query": "title:*NASCLA*", "rawPath": "data/shopify/raw-products.json"}
+   "raw" means the repo turns Shopify data into its own catalog (its own build_catalog.py), so the dashboard
+   commits the untouched product data and never writes shared/catalog.js itself. Without the file, the
+   classic electrician-style catalog is written as before. */
+async function repoSyncConfig(site, ghToken) {
+  if (!site.github_repo || !ghToken) return null;
+  try {
+    const f = await github.getFile(ghToken, site.github_repo, "site-sync.json", site.github_branch || "main");
+    if (!f || !f.content) return null;
+    return JSON.parse(f.content);
+  } catch (e) { if (/JSON/.test(e.message) || e instanceof SyntaxError) throw new Error("site-sync.json in the repo is not valid JSON"); return null; }
+}
+
 async function syncSite(site, opts = {}) {
   const prog = opts.progress || (() => {});
   const token = db.dec(site.shopify_token_enc), ghToken = db.dec(site.github_token_enc);
-  if (!site.shopify_domain || !token || !site.shopify_collection) throw new Error("Shopify domain, token and collection are required");
+  if (!site.shopify_domain || !token) throw new Error("Shopify domain and token are required");
+  prog(2, "Reading the site's sync settings", site.github_repo || "");
+  const cfg = await repoSyncConfig(site, ghToken);
+  if (cfg && cfg.catalog === "raw") return syncRaw(site, opts, cfg, token, ghToken);
+  const ids = shopify.parseCollections(site.shopify_collection);
+  if (!ids.length) throw new Error("Pick a collection in Settings (one numeric id, or several separated by commas)");
   prog(3, "Connecting to Shopify", site.shopify_domain);
-  const { nodes, title } = await shopify.fetchCollection(site.shopify_domain, token, site.shopify_collection, (got, total, t) => prog(5 + (total ? Math.min(1, got / total) : 0.5) * 50, "Pulling products", total ? `${got} of ${total} in "${t}"` : `${got} so far`));
+  const { nodes, title } = await shopify.fetchCollections(site.shopify_domain, token, ids, (got, total, t) => prog(5 + (total ? Math.min(1, got / total) : 0.5) * 50, "Pulling products", total ? `${got} of ${total} in "${t}"` : `${got} so far`));
   if (nodes.length < 5 && !opts.force) throw new Error(`Only ${nodes.length} products returned; refusing to overwrite (use force to override)`);
   prog(57, "Comparing with the last pull", `${nodes.length} active products`);
   const { cat, full } = shopify.toCatalog(nodes);
@@ -50,9 +69,9 @@ async function syncSite(site, opts = {}) {
       price=excluded.price, compare_at=excluded.compare_at, image=excluded.image, url=excluded.url, data=excluded.data, updated_at=CURRENT_TIMESTAMP`,
       [site.id, p.id, p.handle, p.title, p.state, p.level, p.year, p.tier, p.tierName, Number(p.price), p.compareAt ? Number(p.compareAt) : null, p.image, p.url, JSON.stringify(p)]);
   }
-  const ids = cat.map(p => p.id);
+  const liveIds = cat.map(p => p.id);
   const stale = await db.all("SELECT product_id FROM products WHERE site_id=?", [site.id]);
-  for (const s of stale) if (!ids.includes(s.product_id)) await db.run("DELETE FROM products WHERE site_id=? AND product_id=?", [site.id, s.product_id]);
+  for (const s of stale) if (!liveIds.includes(s.product_id)) await db.run("DELETE FROM products WHERE site_id=? AND product_id=?", [site.id, s.product_id]);
 
   let note = `${cat.length} products in "${title}"; ${changed ? "changed" : "no change"}`;
   let pushed = false;
@@ -72,6 +91,52 @@ async function syncSite(site, opts = {}) {
   await log(site.id, "sync", "ok", note);
   await db.run("UPDATE sites SET last_sync_at=CURRENT_TIMESTAMP, last_sync_status='ok', last_sync_note=?, products_count=? WHERE id=?", [note, cat.length, site.id]);
   return { changed, pushed, count: cat.length, note };
+}
+
+/* raw mode: pull, mirror into the Products page, commit the raw data, trigger the site's build */
+async function syncRaw(site, opts, cfg, token, ghToken) {
+  const prog = opts.progress || (() => {});
+  const branch = site.github_branch || "main";
+  const ids = shopify.parseCollections(cfg.collections || (cfg.query ? "" : site.shopify_collection));
+  if (!cfg.query && !ids.length) throw new Error("site-sync.json has no query, and no collection is set in Settings");
+  prog(3, "Connecting to Shopify", site.shopify_domain);
+  const { nodes, title } = await shopify.fetchRaw(site.shopify_domain, token, { query: cfg.query, collections: ids },
+    (got, total, t) => prog(5 + (total ? Math.min(1, got / total) : 0.5) * 50, "Pulling products", total ? `${got} of ${total}: ${t}` : `${got} so far: ${t}`));
+  const min = cfg.minProducts || 50;
+  if (nodes.length < min && !opts.force) throw new Error(`Only ${nodes.length} products returned (this site expects at least ${min}); refusing to overwrite (use force to override)`);
+  nodes.sort((a, b) => a.id < b.id ? -1 : 1);
+  const fingerprint = crypto.createHash("sha1").update(JSON.stringify(nodes)).digest("hex");
+  const prev = await db.get("SELECT note FROM sync_log WHERE site_id=? AND kind='fingerprint' ORDER BY id DESC LIMIT 1", [site.id]);
+  const changed = !prev || prev.note !== fingerprint;
+
+  // the Products page: state and title from the product, the Shopify product type as the package name
+  const { cat } = shopify.toCatalog(nodes); let i = 0;
+  for (const p of cat) {
+    if (++i % 25 === 0) prog(60 + 22 * (i / cat.length), "Updating the Products page", `${i} of ${cat.length}`);
+    const tierName = p.type || "Other";
+    await db.run(`INSERT INTO products (site_id, product_id, handle, title, state, level, year, tier, tier_name, price, compare_at, image, url, data, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(site_id, product_id) DO UPDATE SET handle=excluded.handle, title=excluded.title, state=excluded.state, level=excluded.level, year=excluded.year, tier=excluded.tier, tier_name=excluded.tier_name,
+      price=excluded.price, compare_at=excluded.compare_at, image=excluded.image, url=excluded.url, data=excluded.data, updated_at=CURRENT_TIMESTAMP`,
+      [site.id, p.id, p.handle, p.title, p.state, p.level, p.year, tierName.toLowerCase().replace(/[^a-z0-9]+/g, "-"), tierName, Number(p.price), p.compareAt ? Number(p.compareAt) : null, p.image, p.url, JSON.stringify(p)]);
+  }
+  const keep = cat.map(p => p.id);
+  for (const s of await db.all("SELECT product_id FROM products WHERE site_id=?", [site.id])) if (!keep.includes(s.product_id)) await db.run("DELETE FROM products WHERE site_id=? AND product_id=?", [site.id, s.product_id]);
+
+  let note = `${nodes.length} products (${title}); ${changed ? "changed" : "no change"}`, pushed = false;
+  prog(84, changed ? "Changes found" : "No changes", changed ? "committing the product data to GitHub" : "nothing to push");
+  if (changed && site.github_repo && ghToken && !opts.noPush) {
+    const path = cfg.rawPath || "data/shopify/raw-products.json";
+    prog(88, "Committing product data", `${site.github_repo}/${path}`);
+    const r = await github.putFile(ghToken, site.github_repo, path, branch, JSON.stringify(nodes), `Product sync from dashboard: ${nodes.length} products`);
+    pushed = !r.unchanged;
+    if (pushed) { prog(96, "Triggering the site rebuild", "build.yml"); try { await github.dispatch(ghToken, site.github_repo, cfg.workflow || "build.yml", branch); note += "; committed to GitHub and build triggered (the site turns it into its catalog)"; } catch (e) { note += "; committed to GitHub (the site rebuilds on the push)"; } }
+    else note += "; GitHub already up to date";
+  } else if (changed && !opts.noPush) note += "; no GitHub connection, site not updated";
+  await log(site.id, "fingerprint", "ok", fingerprint);
+  await log(site.id, "sync", "ok", note);
+  await db.run("UPDATE sites SET last_sync_at=CURRENT_TIMESTAMP, last_sync_status='ok', last_sync_note=?, products_count=? WHERE id=?", [note, nodes.length, site.id]);
+  return { changed, pushed, count: nodes.length, note };
 }
 
 async function syncSafe(site, opts) {

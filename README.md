@@ -113,3 +113,8 @@ ADMIN_EMAIL=you@example.com ADMIN_PASSWORD=secret APP_SECRET=anything npm run de
 Tracker events keep no cookies and no raw IP: a per-tab session id and a daily
 hashed visitor id. Tokens are AES-256-GCM encrypted with `APP_SECRET`.
 `/healthz` returns `{"ok":true}` for Render's health check.
+
+## Which products a sync pulls
+
+- **Collection ID(s)** in a site's Settings: one numeric id, or several separated by commas. Products in more than one collection are kept once.
+- **site-sync.json in the site's repo** (optional) overrides that. With `"catalog": "raw"` the dashboard pulls the products the file names (a `query` such as `title:*NASCLA*`, or `collections`), commits the untouched Shopify data to `rawPath` and triggers `build.yml`; the site's own `tools/build_catalog.py` builds its catalog from it. The dashboard never writes `shared/catalog.js` for such a site. Use this for any site whose catalog is not the electrician format (the NASCLA site does).
