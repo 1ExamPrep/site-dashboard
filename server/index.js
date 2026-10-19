@@ -17,17 +17,83 @@ const sign = v => v + "." + crypto.createHmac("sha256", APP_SECRET).update(v).di
 const unsign = s => { if (!s) return null; const i = s.lastIndexOf("."); if (i < 0) return null; const v = s.slice(0, i); return sign(v) === s ? v : null; };
 const hashPw = (pw, salt) => { salt = salt || crypto.randomBytes(16).toString("hex"); return salt + ":" + crypto.scryptSync(pw, salt, 32).toString("hex"); };
 const checkPw = (pw, stored) => { const [salt, h] = String(stored).split(":"); return !!h && crypto.timingSafeEqual(Buffer.from(hashPw(pw, salt).split(":")[1], "hex"), Buffer.from(h, "hex")); };
-async function user(req) { const v = unsign(req.cookies.sess); if (!v) return null; const [uid, exp] = v.split(":"); if (Date.now() > +exp) return null; return db.get("SELECT id, email, role FROM users WHERE id=?", [uid]); }
-const auth = async (req, res, next) => { req.user = await user(req); if (!req.user) return res.redirect("/login?next=" + encodeURIComponent(req.originalUrl)); req.sites = await db.all("SELECT * FROM sites ORDER BY name"); req.ctx = { req, user: req.user, sites: req.sites, baseUrl: baseUrl(req) }; next(); };
+const pwTag = hash => crypto.createHash("sha256").update(String(hash)).digest("hex").slice(0, 12);
+async function user(req) {
+  const v = unsign(req.cookies.sess); if (!v) return null; const [uid, exp, tag] = v.split(":"); if (Date.now() > +exp) return null;
+  const u = await db.get("SELECT id, email, role, pass_hash FROM users WHERE id=?", [uid]); if (!u) return null;
+  if (tag && tag !== pwTag(u.pass_hash)) return null;  // password was reset since this session started
+  return { id: u.id, email: u.email, role: u.role === "viewer" ? "viewer" : "owner" };
+}
+/* Viewers can look at everything but change nothing. These GET pages show settings, tokens or editors, so they are owner-only too. */
+const OWNER_ONLY_GET = [/^\/sites\/new$/, /^\/sites\/[^/]+\/settings$/, /^\/sites\/[^/]+\/blog\/new$/, /^\/sites\/[^/]+\/blog\/\d+\/edit$/, /^\/users(\/|$)/, /^\/blogs\/new$/];
+const auth = async (req, res, next) => {
+  req.user = await user(req); if (!req.user) return res.redirect("/login?next=" + encodeURIComponent(req.originalUrl));
+  req.sites = await db.all("SELECT * FROM sites ORDER BY name"); req.ctx = { req, user: req.user, sites: req.sites, baseUrl: baseUrl(req) };
+  if (req.user.role === "viewer") {
+    const own = /^\/account(\/|$)/.test(req.path);
+    if ((req.method !== "GET" && !own) || OWNER_ONLY_GET.some(rx => rx.test(req.path))) return res.status(403).send(V.noAccessPage(req.ctx));
+  }
+  next();
+};
+const ownerOnly = (req, res, next) => req.user && req.user.role === "owner" ? next() : res.status(403).send(V.noAccessPage(req.ctx));
+const startSession = (res, req, u) => res.cookie("sess", sign(u.id + ":" + (Date.now() + 14 * 86400000) + ":" + pwTag(u.pass_hash)), { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 14 * 86400000 });
+const newPassword = () => crypto.randomBytes(9).toString("base64url");
 const baseUrl = req => (process.env.BASE_URL || (req.protocol + "://" + req.get("host"))).replace(/\/$/, "");
 app.get("/login", (req, res) => res.send(V.loginPage()));
 app.post("/login", async (req, res) => {
   const u = await db.get("SELECT * FROM users WHERE email=?", [String(req.body.email || "").toLowerCase().trim()]);
   if (!u || !checkPw(String(req.body.password || ""), u.pass_hash)) return res.status(401).send(V.loginPage("Wrong email or password."));
-  res.cookie("sess", sign(u.id + ":" + (Date.now() + 14 * 86400000)), { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 14 * 86400000 });
+  startSession(res, req, u);
   res.redirect(req.query.next && req.query.next.startsWith("/") ? req.query.next : "/");
 });
 app.get("/logout", (req, res) => { res.clearCookie("sess"); res.redirect("/login"); });
+
+/* ---------- users (owners) and your own account (everyone) ---------- */
+const ENV_ADMIN = () => (process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+const listUsers = () => db.all("SELECT id, email, role, created_at FROM users ORDER BY created_at, id");
+const owners = async () => (await db.get("SELECT COUNT(*) AS c FROM users WHERE role IS NULL OR role<>'viewer'")).c;
+const usersView = async (req, msg) => V.usersPage(req.ctx, await listUsers(), ENV_ADMIN(), msg);
+app.get("/users", auth, ownerOnly, async (req, res) => res.send(await usersView(req)));
+app.post("/users", auth, ownerOnly, async (req, res) => {
+  const email = String(req.body.email || "").toLowerCase().trim(), role = req.body.role === "viewer" ? "viewer" : "owner";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.send(await usersView(req, { err: "That email address does not look right." }));
+  if (await db.get("SELECT id FROM users WHERE email=?", [email])) return res.send(await usersView(req, { err: email + " already has access. Use Reset password if they cannot sign in." }));
+  const own = String(req.body.password || ""); if (own && own.length < 10) return res.send(await usersView(req, { err: "Passwords need at least 10 characters. Leave the box empty to have one made for you." }));
+  const pw = own || newPassword();
+  await db.run("INSERT INTO users (email, pass_hash, role) VALUES (?,?,?)", [email, hashPw(pw), role]);
+  res.send(await usersView(req, { ok: `Added ${email} as ${role === "viewer" ? "a viewer" : "an owner"}.`, email, password: own ? "" : pw }));
+});
+const target = async (req, res) => { const u = await db.get("SELECT id, email, role FROM users WHERE id=?", [req.params.id]); if (!u) { res.redirect("/users?err=" + encodeURIComponent("No such user")); return null; } return u; };
+app.post("/users/:id/reset", auth, ownerOnly, async (req, res) => {
+  const u = await target(req, res); if (!u) return;
+  if (u.email === ENV_ADMIN()) return res.send(await usersView(req, { err: `${u.email} signs in with the ADMIN_PASSWORD set on Render. Change it there; a reset here would be undone on the next restart.` }));
+  const pw = newPassword(); await db.run("UPDATE users SET pass_hash=? WHERE id=?", [hashPw(pw), u.id]);
+  res.send(await usersView(req, { ok: `New password for ${u.email}. They are signed out everywhere until they use it.`, email: u.email, password: pw }));
+});
+app.post("/users/:id/role", auth, ownerOnly, async (req, res) => {
+  const u = await target(req, res); if (!u) return; const role = req.body.role === "viewer" ? "viewer" : "owner";
+  if (role === "viewer" && u.role !== "viewer" && (await owners()) <= 1) return res.redirect("/users?err=" + encodeURIComponent("There has to be at least one owner."));
+  if (role === "viewer" && u.email === ENV_ADMIN()) return res.redirect("/users?err=" + encodeURIComponent(u.email + " is the Render admin login and stays an owner."));
+  await db.run("UPDATE users SET role=? WHERE id=?", [role, u.id]);
+  res.redirect("/users?ok=" + encodeURIComponent(`${u.email} is now ${role === "viewer" ? "a viewer" : "an owner"}.`));
+});
+app.post("/users/:id/delete", auth, ownerOnly, async (req, res) => {
+  const u = await target(req, res); if (!u) return;
+  if (u.id === req.user.id) return res.redirect("/users?err=" + encodeURIComponent("You cannot remove yourself. Ask another owner."));
+  if (u.email === ENV_ADMIN()) return res.redirect("/users?err=" + encodeURIComponent(u.email + " is the Render admin login; it comes back on every restart. Change ADMIN_EMAIL on Render instead."));
+  if (u.role !== "viewer" && (await owners()) <= 1) return res.redirect("/users?err=" + encodeURIComponent("There has to be at least one owner."));
+  await db.run("DELETE FROM users WHERE id=?", [u.id]);
+  res.redirect("/users?ok=" + encodeURIComponent(`Removed ${u.email}. They are signed out.`));
+});
+app.get("/account", auth, (req, res) => res.send(V.accountPage(req.ctx, ENV_ADMIN())));
+app.post("/account/password", auth, async (req, res) => {
+  const u = await db.get("SELECT * FROM users WHERE id=?", [req.user.id]), cur = String(req.body.current || ""), pw = String(req.body.password || "");
+  if (!checkPw(cur, u.pass_hash)) return res.send(V.accountPage(req.ctx, ENV_ADMIN(), { err: "Your current password is not right." }));
+  if (pw.length < 10) return res.send(V.accountPage(req.ctx, ENV_ADMIN(), { err: "The new password needs at least 10 characters." }));
+  if (pw !== String(req.body.confirm || "")) return res.send(V.accountPage(req.ctx, ENV_ADMIN(), { err: "The two new passwords do not match." }));
+  const h = hashPw(pw); await db.run("UPDATE users SET pass_hash=? WHERE id=?", [h, u.id]); startSession(res, req, { id: u.id, pass_hash: h });
+  res.send(V.accountPage(req.ctx, ENV_ADMIN(), { ok: "Password changed. Other devices are signed out." }));
+});
 
 /* ---------- tracker (public, CORS) ---------- */
 app.get("/t.js", (req, res) => { res.type("application/javascript").set("Cache-Control", "public, max-age=3600").sendFile(path.join(__dirname, "..", "public", "t.js")); });
@@ -291,7 +357,7 @@ app.get("/healthz", (req, res) => res.json({ ok: true, db: db.isPg() ? "postgres
 (async () => {
   await db.init();
   const email = (process.env.ADMIN_EMAIL || "").toLowerCase().trim(), pw = process.env.ADMIN_PASSWORD || "";
-  if (email && pw) { const u = await db.get("SELECT id FROM users WHERE email=?", [email]); if (!u) { await db.run("INSERT INTO users (email, pass_hash) VALUES (?,?)", [email, hashPw(pw)]); console.log("created admin user", email); } else await db.run("UPDATE users SET pass_hash=? WHERE id=?", [hashPw(pw), u.id]); }
+  if (email && pw) { const u = await db.get("SELECT id FROM users WHERE email=?", [email]); if (!u) { await db.run("INSERT INTO users (email, pass_hash, role) VALUES (?,?,?)", [email, hashPw(pw), "owner"]); console.log("created admin user", email); } else { const cur = await db.get("SELECT pass_hash FROM users WHERE id=?", [u.id]); if (!checkPw(pw, cur.pass_hash)) await db.run("UPDATE users SET pass_hash=? WHERE id=?", [hashPw(pw), u.id]); await db.run("UPDATE users SET role='owner' WHERE id=?", [u.id]); } }
   else if (!(await db.get("SELECT id FROM users"))) console.warn("No users: set ADMIN_EMAIL and ADMIN_PASSWORD");
   if (process.env.SCHEDULER !== "off") sync.schedule();
   const port = process.env.PORT || 3000; app.listen(port, () => console.log("dashboard on :" + port, db.isPg() ? "(postgres)" : "(sqlite)"));

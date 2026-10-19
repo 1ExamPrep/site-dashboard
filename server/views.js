@@ -16,8 +16,8 @@ function layout({ title, user, sites, site, section, body, scripts = "" }) {
     <a href="/" class="${site ? "" : "cur"}">All sites</a>${sites.map(s => `<a href="/sites/${s.slug}${section && section !== "home" && site ? "/" + section : ""}" class="${site && s.id === site.id ? "cur" : ""}" data-name="${esc(s.name)}"><span class="dot ${s.last_sync_status === "error" ? "bad" : ""}"></span>${esc(s.name)}<small>${esc(s.url.replace(/^https?:\/\//, ""))}</small></a>`).join("")}
     <a href="/sites/new" class="add">+ Connect a site</a></div></div></div>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} · Site Dashboard</title><meta name="robots" content="noindex"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/app.css"></head>
-<body><a class="skip" href="#main">Skip to content</a><div class="shell">
-<aside class="side"><a class="logo" href="/">1 <span>Exam</span> Prep <small>dashboard</small></a><nav class="nav" aria-label="Sections">${nav}</nav>${site ? `<nav class="nav sub" aria-label="All sites"><a href="/">${ico("M15 18l-6-6 6-6")}<span>All sites</span></a></nav>` : ""}<div class="side-foot"><span>${esc(user.email)}</span><a href="/logout">Sign out</a></div></aside>
+<body class="${user.role === "viewer" ? "viewer" : ""}"><a class="skip" href="#main">Skip to content</a><div class="shell">
+<aside class="side"><a class="logo" href="/">1 <span>Exam</span> Prep <small>dashboard</small></a><nav class="nav" aria-label="Sections">${nav}</nav>${site ? `<nav class="nav sub" aria-label="All sites"><a href="/">${ico("M15 18l-6-6 6-6")}<span>All sites</span></a></nav>` : ""}<div class="side-foot"><span>${esc(user.email)}${user.role === "viewer" ? ` <em class="pill">viewer</em>` : ""}</span>${user.role === "owner" ? `<a href="/users">Users</a>` : ""}<a href="/account">Account</a><a href="/logout">Sign out</a></div></aside>
 <div class="main-col"><header class="top"><button type="button" class="burger" id="burger" aria-label="Menu">${ico("M4 7h16M4 12h16M4 17h16")}</button><h1>${esc(title)}</h1>${switcher}</header><main id="main" class="content">${body}</main></div></div>
 <script src="/app.js"></script>${scripts}</body></html>`;
 }
@@ -154,4 +154,36 @@ function newSitePage(ctx, err, vals = {}) {
     ${panel("3. Shopify (products and orders)", `<div class="grid2"><label>Store domain<input name="shopify_domain" value="${esc(vals.shopify_domain)}" placeholder="store.myshopify.com"></label><label>Admin API token<input name="shopify_token" type="password" autocomplete="new-password" placeholder="shpat_… (custom app made in the store admin)"></label><label>or Dev Dashboard app Client ID<input name="shopify_client_id" autocomplete="off" placeholder="app installed on the store"></label><label>and its Client secret<input name="shopify_client_secret" type="password" autocomplete="new-password" placeholder="shpss_…"></label><label>Collection ID(s)<input name="shopify_collection" value="${esc(vals.shopify_collection)}" placeholder="numeric; several separated by commas"></label><label>Storefront URL<input name="shopify_store_url" type="url" value="${esc(vals.shopify_store_url)}" placeholder="https://yourstore.com"></label></div>`)}
     <p class="muted">You can leave GitHub or Shopify empty and add them later in Settings. A tracker key is created automatically.</p><div class="row"><button class="btn" type="submit">Connect site</button></div></form>` });
 }
-module.exports = { layout, loginPage, homePage, sitePage, analyticsPage, clicksPage, productsPage, ordersPage, syncPage, settingsPage, newSitePage, blogPage, blogsPage, blogEditPage, esc };
+const roleNote = r => r === "viewer" ? "Sees every site, the numbers, products, orders and posts. Cannot change anything or see tokens and settings." : "Full access: connect sites, change settings and tokens, sync, publish, and manage users.";
+function usersPage(ctx, users, envAdmin, msg = {}) {
+  const req = ctx.req, me = ctx.user;
+  const shown = msg.password ? `<div class="flash ok"><b>${esc(msg.ok)}</b><br>Send these to ${esc(msg.email)} yourself. The password is shown only this once.<div class="cred"><span>Sign in at <b>${esc(ctx.baseUrl)}/login</b></span><span>Email <b>${esc(msg.email)}</b></span><span>Password <code>${esc(msg.password)}</code></span></div>They can change it under Account after signing in.</div>` : msg.ok ? `<div class="flash ok">${esc(msg.ok)}</div>` : "";
+  const rows = users.map(u => { const role = u.role === "viewer" ? "viewer" : "owner", isEnv = u.email === envAdmin, isMe = u.id === me.id;
+    return `<tr><td><b>${esc(u.email)}</b>${isMe ? ` <span class="pill">you</span>` : ""}${isEnv ? ` <span class="pill" title="Signs in with ADMIN_EMAIL / ADMIN_PASSWORD on Render">Render admin</span>` : ""}</td>
+      <td>${isEnv ? "Owner" : `<form method="post" action="/users/${u.id}/role" class="inline"><select name="role" aria-label="Role for ${esc(u.email)}" onchange="this.form.submit()"><option value="owner"${role === "owner" ? " selected" : ""}>Owner</option><option value="viewer"${role === "viewer" ? " selected" : ""}>Viewer</option></select><noscript><button class="btn sm ghost">Save</button></noscript></form>`}</td>
+      <td>${esc(String(u.created_at || "").slice(0, 10))}</td>
+      <td class="num">${isEnv ? `<span class="muted">managed on Render</span>` : `<form method="post" action="/users/${u.id}/reset" class="inline" onsubmit="return confirm('Make a new password for ${esc(u.email)}? Their current one stops working.')"><button class="btn sm ghost">Reset password</button></form>${isMe ? "" : ` <form method="post" action="/users/${u.id}/delete" class="inline" onsubmit="return confirm('Remove ${esc(u.email)}? They lose access right away.')"><button class="btn sm danger">Remove</button></form>`}`}</td></tr>`; }).join("");
+  const body = `${flash(req)}${msg.err ? `<div class="flash bad">${esc(msg.err)}</div>` : ""}${shown}
+  ${panel("Add a person", `<form method="post" action="/users" class="form"><div class="grid2"><label>Email<input name="email" type="email" required autocomplete="off" placeholder="name@company.com"></label>
+    <label>Role<select name="role"><option value="viewer">Viewer: can look, cannot change anything</option><option value="owner">Owner: full access, including users</option></select></label>
+    <label>Password <small class="muted">(optional)</small><input name="password" type="text" autocomplete="new-password" minlength="10" placeholder="Leave empty and one is made for you"></label></div>
+    <p class="muted">Nothing is emailed. After you add someone, the sign-in details appear here once for you to send them.</p><div class="row"><button class="btn" type="submit">Add person</button></div></form>`)}
+  ${panel("People with access", `<div class="tbl"><table><thead><tr><th>Email</th><th>Role</th><th>Added</th><th class="num">Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`, users.length + (users.length === 1 ? " person" : " people"))}
+  ${panel("What the roles can do", `<dl class="roles"><dt>Owner</dt><dd>${roleNote("owner")}</dd><dt>Viewer</dt><dd>${roleNote("viewer")}</dd></dl><p class="muted">There is always at least one owner. The Render admin login (ADMIN_EMAIL) is always an owner and its password is set on Render.</p>`)}`;
+  return layout({ ...ctx, title: "Users", section: "users", body });
+}
+function accountPage(ctx, envAdmin, msg = {}) {
+  const me = ctx.user, isEnv = me.email === envAdmin;
+  const body = `${msg.ok ? `<div class="flash ok">${esc(msg.ok)}</div>` : ""}${msg.err ? `<div class="flash bad">${esc(msg.err)}</div>` : ""}
+  ${panel("Your account", `<p><b>${esc(me.email)}</b> <span class="pill">${me.role === "viewer" ? "Viewer" : "Owner"}</span></p><p class="muted">${roleNote(me.role)}</p>`)}
+  ${isEnv ? panel("Password", `<p class="muted">This login's password comes from ADMIN_PASSWORD in the service's Environment tab on Render. Change it there; the dashboard picks it up on the next restart.</p>`)
+    : panel("Change password", `<form method="post" action="/account/password" class="form keep"><div class="grid2"><label>Current password<input name="current" type="password" required autocomplete="current-password"></label><span></span>
+    <label>New password<input name="password" type="password" required minlength="10" autocomplete="new-password"></label><label>New password again<input name="confirm" type="password" required minlength="10" autocomplete="new-password"></label></div>
+    <p class="muted">At least 10 characters. Changing it signs you out on other devices.</p><div class="row"><button class="btn" type="submit">Change password</button></div></form>`)}`;
+  return layout({ ...ctx, title: "Account", section: "account", body });
+}
+function noAccessPage(ctx) {
+  return layout({ ...ctx, title: "View only", section: "", body: panel("Your login is view only", `<p>You can see every site's numbers, products, orders and posts, but changes and settings are for owners. Ask an owner if you need something changed.</p><div class="row"><a class="btn" href="/">Back to all sites</a></div>`) });
+}
+
+module.exports = { layout, loginPage, homePage, sitePage, analyticsPage, clicksPage, productsPage, ordersPage, syncPage, settingsPage, newSitePage, blogPage, blogsPage, blogEditPage, usersPage, accountPage, noAccessPage, esc };

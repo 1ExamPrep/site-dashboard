@@ -118,3 +118,16 @@ hashed visitor id. Tokens are AES-256-GCM encrypted with `APP_SECRET`.
 
 - **Collection ID(s)** in a site's Settings: one numeric id, or several separated by commas. Products in more than one collection are kept once.
 - **site-sync.json in the site's repo** (optional) overrides that. With `"catalog": "raw"` the dashboard pulls the products the file names (a `query` such as `title:*NASCLA*`, or `collections`), commits the untouched Shopify data to `rawPath` and triggers `build.yml`; the site's own `tools/build_catalog.py` builds its catalog from it. The dashboard never writes `shared/catalog.js` for such a site. Use this for any site whose catalog is not the electrician format (the NASCLA site does).
+
+## Users
+
+The login set by `ADMIN_EMAIL` / `ADMIN_PASSWORD` on Render is always an owner. Owners add more people under
+**Users** (link at the bottom of the sidebar):
+
+- **Owner**: full access, including settings, tokens, sync, publishing and managing users.
+- **Viewer**: sees every site's numbers, products, orders and posts, but cannot change anything or open settings.
+  The server enforces this, not just the buttons.
+
+Nothing is emailed: when you add someone or reset a password, the sign-in details are shown once on the page for
+you to send. Anyone can change their own password under **Account**. Resetting a password or removing someone
+signs them out everywhere straight away. There is always at least one owner.

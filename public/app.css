@@ -80,3 +80,15 @@ code.sel{user-select:all;font-size:.78rem;word-break:break-all;white-space:norma
 .row.pick select{padding:.6rem .8rem;border:1px solid var(--line);border-radius:999px;background:#fff;font:inherit;font-weight:600;min-width:220px}
 pre.code.small{font-size:.72rem;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-all;max-width:520px}
 ol.steps{margin:.5rem 0 1rem 1.2rem;padding:0;line-height:1.55}ol.steps li{margin:.35rem 0}ol.steps pre{margin:.4rem 0}
+
+/* users and account */
+.side-foot a+a{margin-left:.7rem}
+.side-foot .pill{font-style:normal;font-size:.7rem;margin-left:.3rem}
+form.inline{display:inline}
+.cred{display:flex;flex-wrap:wrap;gap:.4rem 1.4rem;margin:.6rem 0;padding:.7rem .9rem;background:#fff;border-radius:10px;border:1px dashed var(--line)}
+.cred code{font-size:1rem;background:#f3f4f7;padding:.1rem .45rem;border-radius:6px;user-select:all}
+.roles{display:grid;grid-template-columns:max-content 1fr;gap:.5rem 1.2rem;margin:0}.roles dt{font-weight:700}.roles dd{margin:0}
+td select{font:inherit;padding:.3rem .5rem;border-radius:8px;border:1px solid var(--line);background:#fff}
+/* viewers: hide controls that would only lead to "view only" */
+.viewer form[method=post]:not(.keep),.viewer a[href="/sites/new"],.viewer a[href$="/settings"],.viewer a[href*="/blog/new"],.viewer a[href$="/edit"],.viewer .switch-list .add{display:none!important}
+.side-foot{flex-wrap:wrap}
