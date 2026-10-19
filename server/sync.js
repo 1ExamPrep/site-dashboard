@@ -144,15 +144,43 @@ async function syncSafe(site, opts) {
   catch (e) { await log(site.id, "sync", "error", e.message); await db.run("UPDATE sites SET last_sync_at=CURRENT_TIMESTAMP, last_sync_status='error', last_sync_note=? WHERE id=?", [e.message.slice(0, 500), site.id]); return { error: e.message }; }
 }
 
+/* Which orders belong to a site. Shopify sells one store for every site, so an order counts for a site only when
+   it carries the site's tag (attributes[Site] or ref=<domain>, added by the site's Buy now links) or when Shopify
+   recorded a visit referred by the site's domain. Everything else came through the main store or another site. */
+const hostOf = u => { try { return new URL(/^https?:/.test(u) ? u : "https://" + u).hostname.replace(/^www\./, "").toLowerCase(); } catch (e) { return ""; } };
+function orderSource(o, host) {
+  if (!host) return "";
+  for (const a of o.customAttributes || []) if (/^_*site$/i.test(a.key) && hostOf(a.value) === host) return "site tag";
+  const cj = o.customerJourneySummary || {};
+  for (const v of [cj.firstVisit, cj.lastVisit]) {
+    if (!v) continue;
+    if (v.referralCode && hostOf(v.referralCode) === host) return "site tag";
+    if (v.referrerUrl && hostOf(v.referrerUrl) === host) return "referred by site";
+    if (v.landingPage && /[?&]ref=([^&]+)/.test(v.landingPage) && hostOf(decodeURIComponent(v.landingPage.match(/[?&]ref=([^&]+)/)[1])) === host) return "site tag";
+  }
+  return "";
+}
 async function syncOrders(site, days = 30) {
   const token = db.dec(site.shopify_token_enc); if (!site.shopify_domain || !token) return { skipped: true };
+  const host = hostOf(site.url || "");
+  if (!host) return { count: 0, matched: 0, note: "Add the site's live URL in Settings so its orders can be told apart from the rest of the store." };
   const orders = await shopify.recentOrders(site.shopify_domain, token, days);
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const keep = [];
   for (const o of orders) {
-    await db.run(`INSERT INTO orders (site_id, order_id, name, created_at, total, currency, status, items) VALUES (?,?,?,?,?,?,?,?)
-      ON CONFLICT(site_id, order_id) DO UPDATE SET total=excluded.total, status=excluded.status, items=excluded.items`,
-      [site.id, o.id.split("/").pop(), o.name, o.createdAt, Number(o.totalPriceSet.shopMoney.amount), o.totalPriceSet.shopMoney.currencyCode, o.displayFinancialStatus, JSON.stringify(o.lineItems.edges.map(e => ({ t: e.node.title, q: e.node.quantity, p: e.node.product ? e.node.product.id.split("/").pop() : null })))]);
+    const src = orderSource(o, host); if (!src) continue;
+    const id = o.id.split("/").pop(); keep.push(id);
+    await db.run(`INSERT INTO orders (site_id, order_id, name, created_at, total, currency, status, items, source) VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(site_id, order_id) DO UPDATE SET total=excluded.total, status=excluded.status, items=excluded.items, source=excluded.source`,
+      [site.id, id, o.name, o.createdAt, Number(o.totalPriceSet.shopMoney.amount), o.totalPriceSet.shopMoney.currencyCode, o.displayFinancialStatus, JSON.stringify(o.lineItems.edges.map(e => ({ t: e.node.title, q: e.node.quantity, p: e.node.product ? e.node.product.id.split("/").pop() : null }))), src]);
   }
-  return { count: orders.length };
+  // drop store orders saved before this filter existed, and anything in the window that no longer matches
+  await db.run("DELETE FROM orders WHERE site_id=? AND (source IS NULL OR source='')", [site.id]);
+  if (!orders.attributionMissing) {
+    const stale = (await db.all("SELECT order_id FROM orders WHERE site_id=? AND created_at>=?", [site.id, since])).map(r => r.order_id).filter(id => !keep.includes(id));
+    for (const id of stale) await db.run("DELETE FROM orders WHERE site_id=? AND order_id=?", [site.id, id]);
+  }
+  return { count: orders.length, matched: keep.length, note: orders.attributionMissing ? "Shopify did not return order sources: " + orders.attributionMissing : "" };
 }
 
 /* hourly scheduler: run each site's sync at its chosen weekday/hour (America/Chicago) */

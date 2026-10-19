@@ -203,7 +203,7 @@ app.get("/sites/:slug/orders", auth, site, async (req, res) => {
   const buys = (await db.get("SELECT COUNT(*) AS c FROM events WHERE site_id=? AND event='buy_now_click' AND day>=?", [req.site.id, since]) || {}).c || 0;
   res.send(V.ordersPage(req.ctx, req.site, req.days, { count: rows.length, total: rows.reduce((a, o) => a + o.total, 0), daily, items: Object.entries(items).map(([k, v]) => ({ k, v })).sort((a, b) => b.v - a.v).slice(0, 10), recent: rows.slice(0, 30), buys }));
 });
-app.post("/sites/:slug/orders/refresh", auth, site, async (req, res) => { try { const r = await sync.syncOrders(req.site, 90); res.redirect(`/sites/${req.site.slug}/orders?ok=` + encodeURIComponent(r.skipped ? "Connect Shopify first" : `Pulled ${r.count} orders from the last 90 days`)); } catch (e) { res.redirect(`/sites/${req.site.slug}/orders?err=` + encodeURIComponent(e.message)); } });
+app.post("/sites/:slug/orders/refresh", auth, site, async (req, res) => { try { const r = await sync.syncOrders(req.site, 90); if (r.note && !r.count) return res.redirect(`/sites/${req.site.slug}/orders?err=` + encodeURIComponent(r.note)); res.redirect(`/sites/${req.site.slug}/orders?ok=` + encodeURIComponent(r.skipped ? "Connect Shopify first" : `Checked ${r.count} store orders from the last 90 days; ${r.matched} came from this site.${r.note ? " " + r.note : ""}`)); } catch (e) { res.redirect(`/sites/${req.site.slug}/orders?err=` + encodeURIComponent(e.message)); } });
 app.get("/sites/:slug/sync", auth, site, async (req, res) => {
   const logs = await db.all("SELECT * FROM sync_log WHERE site_id=? AND kind<>'fingerprint' ORDER BY id DESC LIMIT 40", [req.site.id]);
   let gh = null; const t = db.dec(req.site.github_token_enc);

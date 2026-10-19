@@ -29,7 +29,8 @@ const SCHEMA = [
 
 const MIGRATIONS = [`ALTER TABLE sites ADD COLUMN webhook_secret TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN takeaways TEXT DEFAULT ''`,
   `ALTER TABLE sites ADD COLUMN rankwork_secret_enc TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN external_id TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN kind TEXT DEFAULT 'blog'`,
-  `ALTER TABLE posts ADD COLUMN meta_title TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN meta_description TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN old_slugs TEXT DEFAULT ''`];
+  `ALTER TABLE posts ADD COLUMN meta_title TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN meta_description TEXT DEFAULT ''`, `ALTER TABLE posts ADD COLUMN old_slugs TEXT DEFAULT ''`,
+  `ALTER TABLE orders ADD COLUMN source TEXT DEFAULT ''`];
 async function init() {
   if (PG_URL) {
     const { Pool } = require("pg");

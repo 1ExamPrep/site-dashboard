@@ -117,12 +117,19 @@ async function listCollections(domain, token) {
   const d = await gql(domain, token, `{ collections(first: 100, sortKey: TITLE) { edges { node { id title productsCount { count } } } } }`, {});
   return d.collections.edges.map(e => ({ id: e.node.id.split("/").pop(), title: e.node.title, count: e.node.productsCount.count }));
 }
+/* Where an order came from: the cart attributes and referral code our Buy now links add, and the visit Shopify recorded. */
+const ATTR_FIELDS = ` customAttributes { key value } customerJourneySummary { firstVisit { landingPage referrerUrl referralCode } lastVisit { landingPage referrerUrl referralCode } }`;
+let ATTR = ATTR_FIELDS;
 async function recentOrders(domain, token, days = 30) {
+  try { return await recentOrdersQ(domain, token, days); }
+  catch (e) { if (!ATTR) throw e; ATTR = ""; try { const r = await recentOrdersQ(domain, token, days); r.attributionMissing = e.message; return r; } finally { ATTR = ATTR_FIELDS; } }
+}
+async function recentOrdersQ(domain, token, days) {
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const out = []; let after = null;
   for (let i = 0; i < 10; i++) {
     const d = await gql(domain, token, `query($q: String!, $after: String) { orders(first: 50, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) {
-      edges { node { id name createdAt displayFinancialStatus totalPriceSet { shopMoney { amount currencyCode } } lineItems(first: 10) { edges { node { title quantity product { id } } } } } }
+      edges { node { id name createdAt displayFinancialStatus totalPriceSet { shopMoney { amount currencyCode } } lineItems(first: 10) { edges { node { title quantity product { id } } } }${ATTR} } }
       pageInfo { hasNextPage endCursor } } }`, { q: `created_at:>=${since}`, after });
     out.push(...d.orders.edges.map(e => e.node));
     if (!d.orders.pageInfo.hasNextPage) break; after = d.orders.pageInfo.endCursor;
