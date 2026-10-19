@@ -118,7 +118,7 @@ async function listCollections(domain, token) {
   return d.collections.edges.map(e => ({ id: e.node.id.split("/").pop(), title: e.node.title, count: e.node.productsCount.count }));
 }
 /* Where an order came from: the cart attributes and referral code our Buy now links add, and the visit Shopify recorded. */
-const ATTR_FIELDS = ` customAttributes { key value } customerJourneySummary { firstVisit { landingPage referrerUrl referralCode } lastVisit { landingPage referrerUrl referralCode } }`;
+const ATTR_FIELDS = ` sourceName channelInformation { channelDefinition { channelName handle } } customAttributes { key value } customerJourneySummary { firstVisit { landingPage referrerUrl referralCode } lastVisit { landingPage referrerUrl referralCode } }`;
 let ATTR = ATTR_FIELDS;
 async function recentOrders(domain, token, days = 30) {
   try { return await recentOrdersQ(domain, token, days); }

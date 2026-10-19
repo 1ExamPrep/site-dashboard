@@ -147,7 +147,7 @@ async function stats(siteId, days) {
   const hours = Object.keys(hourMap).sort().map(h => ({ k: h + ":00", v: hourMap[h] }));
   const statesViewed = (await db.all(`SELECT path AS k, COUNT(*) AS v FROM events WHERE ${W} AND event='page_view' GROUP BY path`, P)).reduce((a, r) => { const m = r.k.match(/\/([a-z-]+)\/(journeyman|master)\//); if (!m) return a; const k = m[1].replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase()); const f = a.find(x => x.k === k); if (f) f.v += r.v; else a.push({ k, v: r.v }); return a; }, []).sort((a, b) => b.v - a.v).slice(0, 12);
   const recent = (await db.all(`SELECT e.ts, e.product_id, e.variant_id, e.price, e.location, e.path, p.state, p.level, p.tier_name FROM events e LEFT JOIN products p ON p.site_id=e.site_id AND p.product_id=e.product_id WHERE e.site_id=? AND e.event='buy_now_click' ORDER BY e.id DESC LIMIT 25`, [siteId])).map(r => ({ ...r, ts: String(r.ts).slice(0, 16).replace("T", " "), title: r.tier_name ? `${r.state || "General"} ${r.level} ${r.tier_name}` : "" }));
-  const orders = (await db.get(`SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total FROM orders WHERE site_id=? AND created_at>=?`, [siteId, since])) || { count: 0, total: 0 };
+  const orders = (await db.get(`SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total FROM orders WHERE site_id=? AND created_at>=? AND source<>''`, [siteId, since])) || { count: 0, total: 0 };
   return { daily: out, tot, byState, byTier, byLevel, byLocation, byProduct, pages, referrers, devices, events, searches, faq, hours, statesViewed, recent, orders };
 }
 
@@ -197,7 +197,7 @@ app.get("/sites/:slug/products.csv", auth, site, async (req, res) => {
 });
 app.get("/sites/:slug/orders", auth, site, async (req, res) => {
   const since = new Date(Date.now() - (req.days - 1) * 86400000).toISOString().slice(0, 10);
-  const rows = await db.all("SELECT * FROM orders WHERE site_id=? AND created_at>=? ORDER BY created_at DESC", [req.site.id, since]);
+  const rows = await db.all("SELECT * FROM orders WHERE site_id=? AND created_at>=? AND source<>'' ORDER BY created_at DESC", [req.site.id, since]);
   const dailyM = {}; const items = {}; rows.forEach(o => { const d = String(o.created_at).slice(0, 10); dailyM[d] = (dailyM[d] || 0) + o.total; JSON.parse(o.items || "[]").forEach(i => { items[i.t] = (items[i.t] || 0) + i.q; }); });
   const daily = []; for (let i = req.days - 1; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10); daily.push({ day: d, total: dailyM[d] || 0 }); }
   const buys = (await db.get("SELECT COUNT(*) AS c FROM events WHERE site_id=? AND event='buy_now_click' AND day>=?", [req.site.id, since]) || {}).c || 0;
@@ -235,7 +235,8 @@ app.post("/sites/:slug/settings", auth, site, async (req, res) => {
   try { shopifyCred(b); } catch (e) { return res.redirect(`/sites/${s.slug}/settings?err=${encodeURIComponent(e.message)}`); }
   const upd = { name: String(b.name || s.name).trim(), url: String(b.url || "").trim().replace(/\/$/, ""), notes: String(b.notes || ""), github_repo: String(b.github_repo || "").trim(), github_branch: String(b.github_branch || "main").trim() || "main",
     shopify_domain: String(b.shopify_domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""), shopify_collection: String(b.shopify_collection_pick || b.shopify_collection || "").trim(), shopify_store_url: String(b.shopify_store_url || "").trim(),
-    ga4_measurement: String(b.ga4_measurement || "").trim(), ga4_property: String(b.ga4_property || "").trim(), sync_enabled: b.sync_enabled === "0" ? 0 : 1, sync_weekday: +b.sync_weekday || 0, sync_hour: +b.sync_hour || 0 };
+    ga4_measurement: String(b.ga4_measurement || "").trim(), ga4_property: String(b.ga4_property || "").trim(), sync_enabled: b.sync_enabled === "0" ? 0 : 1, sync_weekday: +b.sync_weekday || 0, sync_hour: +b.sync_hour || 0,
+    orders_channel: ["web", "shop", "any"].includes(String(b.orders_channel)) ? String(b.orders_channel) : (s.orders_channel || "web") };
   const cols = Object.keys(upd); const vals = Object.values(upd);
   await db.run(`UPDATE sites SET ${cols.map(c => c + "=?").join(", ")} WHERE id=?`, [...vals, s.id]);
   if (b.github_token) await db.run("UPDATE sites SET github_token_enc=? WHERE id=?", [db.enc(String(b.github_token).trim()), s.id]);

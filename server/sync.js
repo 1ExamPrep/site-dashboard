@@ -148,8 +148,18 @@ async function syncSafe(site, opts) {
    it carries the site's tag (attributes[Site] or ref=<domain>, added by the site's Buy now links) or when Shopify
    recorded a visit referred by the site's domain. Everything else came through the main store or another site. */
 const hostOf = u => { try { return new URL(/^https?:/.test(u) ? u : "https://" + u).hostname.replace(/^www\./, "").toLowerCase(); } catch (e) { return ""; } };
-function orderSource(o, host) {
+/* Step 1: the order's Shopify sales channel must match the site's (Online Store by default; "any" skips the check). */
+function channelOk(o, want) {
+  want = String(want || "web").toLowerCase().trim(); if (want === "any") return true;
+  const cd = (o.channelInformation && o.channelInformation.channelDefinition) || {};
+  const have = [cd.handle, cd.channelName, o.sourceName].filter(Boolean).map(x => String(x).toLowerCase());
+  if (!have.length) return want === "web";  // older API answers without channel info: Online Store is the only channel that takes cart links
+  return have.includes(want) || (want === "web" && have.includes("online store")) || (want === "online store" && have.includes("web"));
+}
+/* Step 2: the order has to point at the site's own address. */
+function orderSource(o, host, channel) {
   if (!host) return "";
+  if (!channelOk(o, channel)) return "";
   for (const a of o.customAttributes || []) if (/^_*site$/i.test(a.key) && hostOf(a.value) === host) return "site tag";
   const cj = o.customerJourneySummary || {};
   for (const v of [cj.firstVisit, cj.lastVisit]) {
@@ -168,7 +178,7 @@ async function syncOrders(site, days = 30) {
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const keep = [];
   for (const o of orders) {
-    const src = orderSource(o, host); if (!src) continue;
+    const src = orderSource(o, host, site.orders_channel); if (!src) continue;
     const id = o.id.split("/").pop(); keep.push(id);
     await db.run(`INSERT INTO orders (site_id, order_id, name, created_at, total, currency, status, items, source) VALUES (?,?,?,?,?,?,?,?,?)
       ON CONFLICT(site_id, order_id) DO UPDATE SET total=excluded.total, status=excluded.status, items=excluded.items, source=excluded.source`,
