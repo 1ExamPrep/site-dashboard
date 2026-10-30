@@ -89,7 +89,11 @@ async function store(site, p, source, opts = {}) {
   oldSlugs = oldSlugs.filter(x => x !== p.slug);
   const imgExt = opts.imageFile ? opts.imageFile.ext : (p.imageFile ? p.imageFile.ext : null); const imageFile = opts.imageFile || p.imageFile || null;
   if (imageFile) p.image = `/content/images/${p.slug}.${imgExt}`;  // site-relative; build.py makes it absolute for og:image and schema
-  else if (cur && !p.image) p.image = cur.image || "";
+  // An update that does not carry a field keeps what is already saved. Tools often send a full publish and then a
+  // shorter notice for the same post; the notice must not wipe the saved picture, SEO title, description or source id.
+  // A picture already copied into the site (/content/images/...) is only replaced by a new uploaded picture.
+  else if (cur && cur.image && (!p.image || (source !== "editor" && /^\/content\/images\//.test(cur.image)))) p.image = cur.image;
+  if (cur && source !== "editor") for (const k of ["meta_title", "meta_description", "external_id", "author", "tags", "takeaways", "excerpt"]) if (!p[k] && cur[k]) p[k] = cur[k];
   if (cur) await db.run(`UPDATE posts SET ${COLS.map(c => c + "=?").join(", ")}, slug=?, old_slugs=?, source=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, [...COLS.map(c => p[c] || ""), p.slug, oldSlugs.join(","), source, cur.id]);
   else await db.run(`INSERT INTO posts (site_id, slug, old_slugs, ${COLS.join(", ")}, source) VALUES (?,?,?,${COLS.map(() => "?").join(",")},?)`, [site.id, p.slug, oldSlugs.join(","), ...COLS.map(c => p[c] || ""), source]);
   const row = await db.get("SELECT * FROM posts WHERE site_id=? AND slug=?", [site.id, p.slug]);
