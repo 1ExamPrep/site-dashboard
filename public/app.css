@@ -94,3 +94,13 @@ td select{font:inherit;padding:.3rem .5rem;border-radius:8px;border:1px solid va
 .side-foot .who{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bdbdbd}
 .side-links{display:flex;flex-wrap:wrap;gap:.35rem 1rem}
 .side-links a{white-space:nowrap}
+
+/* All sites: one site per row */
+.cards{grid-template-columns:1fr;gap:.7rem}
+.card.site-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,2fr) 170px;grid-template-areas:"id stats pill";align-items:center;gap:1.2rem;padding:1rem 1.3rem}
+.site-row .card-id{grid-area:id;min-width:0}.site-row .card-id b{display:block;font-size:1.05rem;overflow-wrap:anywhere}.site-row .card-id small{overflow-wrap:anywhere}
+.site-row .card-stats{grid-area:stats;margin-top:0}
+.site-row .pill{grid-area:pill;justify-self:end;white-space:nowrap}
+.card.add{padding:1.2rem;grid-template-columns:none}
+@media (max-width:900px){.card.site-row{grid-template-columns:1fr auto;grid-template-areas:"id pill" "stats stats";gap:.8rem}}
+@media (max-width:520px){.site-row .card-stats{grid-template-columns:repeat(2,1fr);row-gap:.7rem}}
