@@ -33,7 +33,10 @@ const MIGRATIONS = [`ALTER TABLE sites ADD COLUMN webhook_secret TEXT DEFAULT ''
   `ALTER TABLE orders ADD COLUMN source TEXT DEFAULT ''`, `ALTER TABLE sites ADD COLUMN orders_channel TEXT DEFAULT 'web'`];
 async function init() {
   if (PG_URL) {
-    const { Pool } = require("pg");
+    const { Pool, types } = require("pg");
+    // pg returns COUNT()/SUM() (bigint, numeric) as strings; without this the home page glued site totals together as text.
+    types.setTypeParser(20, v => (v === null ? null : Number(v)));    // int8 / bigint (COUNT)
+    types.setTypeParser(1700, v => (v === null ? null : Number(v)));  // numeric (SUM over ints, money)
     pg = new Pool({ connectionString: PG_URL, ssl: PG_URL.includes("localhost") ? false : { rejectUnauthorized: false } });
     for (const s of SCHEMA) await pg.query(s);
     for (const m of MIGRATIONS) await pg.query(m.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS"));
